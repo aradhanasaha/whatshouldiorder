@@ -107,8 +107,25 @@ export default function ResultsScreen({
               <p className="max-w-xs text-sm text-gray-400">
                 {isLoading
                   ? 'Restaurants should appear first. Matching dishes will fill in as menus, estimates, and web fallback results resolve.'
-                  : 'Try increasing your calorie or budget target, or select a different restaurant.'}
+                  : 'Try increasing your budget, relaxing your calorie or protein target, switching diet preference to All, or selecting a different restaurant.'}
               </p>
+              {!isLoading ? (
+                <div className="mt-5 flex max-w-sm flex-wrap justify-center gap-2">
+                  {[
+                    'Try increasing budget',
+                    'Relax calorie target',
+                    'Lower protein target',
+                    'Switch diet to All',
+                  ].map((tip) => (
+                    <span
+                      key={tip}
+                      className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-500 shadow-sm"
+                    >
+                      {tip}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">

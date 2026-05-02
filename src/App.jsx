@@ -80,6 +80,20 @@ function buildRestaurantRecord(candidate) {
   };
 }
 
+function getPlacesWarningMessage(error) {
+  const message = error?.message || '';
+
+  if (message.includes('Places API 403')) {
+    return 'Google Places access is not enabled for this build right now, so the app has switched to demo restaurants.';
+  }
+
+  if (message.includes('Places API 401')) {
+    return 'The Google Places key looks invalid for this build, so the app has switched to demo restaurants.';
+  }
+
+  return `Places lookup failed (${message.split(':')[0] || 'unknown error'}) - showing demo restaurants instead.`;
+}
+
 export default function App() {
   const [status, setStatus] = useState('idle');
   const [goals, setGoals] = useState(null);
@@ -89,6 +103,7 @@ export default function App() {
   const [loadingPhase, setLoadingPhase] = useState('');
   const [apiWarning, setApiWarning] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showDemoNote, setShowDemoNote] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(true);
   const searchRunRef = useRef(0);
@@ -332,7 +347,7 @@ export default function App() {
           candidates = await fetchRestaurantCandidates(lat, lng, googleKey);
         } catch (error) {
           setIsDemoMode(true);
-          setApiWarning(`Places API error (${error.message.split(':')[0]}) - showing demo restaurants instead.`);
+          setApiWarning(getPlacesWarningMessage(error));
           candidates = await fetchRestaurantCandidates(lat, lng, '');
         }
 
@@ -420,6 +435,28 @@ export default function App() {
       </aside>
 
       <main className={`${!mobileSidebarOpen ? 'flex' : 'hidden'} md:flex flex-1 flex-col overflow-y-auto relative`}>
+        <div className="absolute right-3 top-3 z-20">
+          <button
+            onClick={() => setShowDemoNote((current) => !current)}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-white text-sm font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+            aria-label="About this demo"
+            title="About this demo"
+          >
+            i
+          </button>
+
+          {showDemoNote ? (
+            <div className="mt-2 w-[280px] rounded-2xl border border-sky-100 bg-white p-4 text-left shadow-xl shadow-sky-100">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-600">Demo Note</p>
+              <p className="mt-2 text-sm leading-relaxed text-gray-600">
+                Hey Swiggy team, this is the current demo. Coverage from Google Maps APIs and my own food database is still
+                fairly shallow, and that gap is exactly where Swiggy MCP tools would make this much stronger with deeper
+                restaurant, menu, and ordering coverage.
+              </p>
+            </div>
+          ) : null}
+        </div>
+
         {(apiWarning || isDemoMode) && status !== 'idle' && (
           <div
             className={`shrink-0 border-b px-4 py-2 text-center text-xs ${
