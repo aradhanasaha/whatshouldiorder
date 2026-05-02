@@ -1,3 +1,4 @@
-/.env.local
-/food-db.js
-/PRD-v2.md
+node_modules/
+dist/
+.env
+.env.local
