@@ -188,15 +188,33 @@ export async function handleRestaurantFallback(body, env = {}) {
     return { status: 400, payload: { error: 'Missing OpenAI API key.' } };
   }
 
+  // Prefer Places-only flow to avoid OpenAI token usage.
+  try {
+    // Dynamically import the Places fallback to keep startup light.
+    const { restaurantFallbackViaPlaces } = await import('./placesFallback.js');
+    try {
+      const placesResult = await restaurantFallbackViaPlaces(body, env);
+      if (placesResult?.dishes?.length) {
+        return { status: 200, payload: placesResult };
+      }
+    } catch (err) {
+      // ignore and fall back to OpenAI flows
+    }
+  } catch (err) {
+    // ignore import failure and fall back
+  }
+
   try {
     const result = await restaurantFallbackViaSearch(apiKey, body);
+    if (result?.dishes?.length) return { status: 200, payload: result };
+  } catch (err) {
+    // try chat fallback next
+  }
+
+  try {
+    const result = await restaurantFallbackViaChat(apiKey, body);
     return { status: 200, payload: result };
-  } catch {
-    try {
-      const result = await restaurantFallbackViaChat(apiKey, body);
-      return { status: 200, payload: result };
-    } catch (error) {
-      return { status: 500, payload: { error: error.message || 'Failed restaurant fallback.' } };
-    }
+  } catch (error) {
+    return { status: 500, payload: { error: error.message || 'Failed restaurant fallback.' } };
   }
 }

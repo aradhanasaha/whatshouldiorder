@@ -3,7 +3,7 @@ import InputScreen from './components/InputScreen.jsx';
 import ResultsScreen from './components/ResultsScreen.jsx';
 import SettingsModal from './components/SettingsModal.jsx';
 import { estimateMacros, findRestaurantFallbackDishes } from './utils/openai.js';
-import { extractMenuFromDetails, fetchRestaurantCandidates, getPlaceDetails } from './utils/places.js';
+import { extractMenuFromDetails, fetchRestaurantCandidates, getPlaceDetails, MOCK_RESTAURANTS } from './utils/places.js';
 import { matchScore } from './utils/scoring.js';
 import { lookupDish } from '../food-db.js';
 
@@ -240,31 +240,39 @@ export default function App() {
 
   const runRestaurantFallback = useCallback(
     async (restaurant, currentGoals, openaiKey, locationText, runId) => {
-      if (!openaiKey) {
-        patchRestaurant(restaurant.id, (current) => ({ ...current, fallbackStatus: 'unavailable' }));
-        return;
-      }
-
       patchRestaurant(restaurant.id, (current) => ({ ...current, fallbackStatus: 'loading' }));
 
       try {
-        const dishesFromFallback = await findRestaurantFallbackDishes(
-          {
-            restaurantName: restaurant.name,
-            locationText,
-            mealTarget: {
-              kcal: currentGoals.perMeal.kcal,
-              protein: currentGoals.perMeal.protein,
-              budget: currentGoals.budget,
-            },
-            diet: currentGoals.diet,
-          },
-          openaiKey
-        );
+        setLoadingPhase('Expanding search for nearby menus...');
+
+        let dishesFromFallback = [];
+
+        if (openaiKey) {
+          try {
+            dishesFromFallback = await findRestaurantFallbackDishes(
+              {
+                restaurantName: restaurant.name,
+                locationText,
+                mealTarget: {
+                  kcal: currentGoals.perMeal.kcal,
+                  protein: currentGoals.perMeal.protein,
+                  budget: currentGoals.budget,
+                },
+                diet: currentGoals.diet,
+              },
+              openaiKey
+            );
+          } catch (err) {
+            dishesFromFallback = [];
+          }
+        }
+
+        // restore phase after fallback attempt
+        setLoadingPhase('Web fallback finished.');
 
         if (searchRunRef.current !== runId) return;
 
-        const normalized = dishesFromFallback
+        let normalized = (dishesFromFallback || [])
           .map((dish) =>
             scoreDish(
               {
@@ -290,14 +298,52 @@ export default function App() {
           )
           .filter(Boolean);
 
+        // If OpenAI/web fallbacks returned nothing, use local food DB + demo restaurants fallback
+        if (!normalized.length) {
+          // try to find a matching demo restaurant by name
+          const match = MOCK_RESTAURANTS.find((m) => {
+            const mName = (m.displayName?.text || '').toLowerCase();
+            const rName = (restaurant.name || '').toLowerCase();
+            return mName && (rName.includes(mName) || mName.includes(rName));
+          });
+
+          const demoSource = match || MOCK_RESTAURANTS[0];
+          const demoMenu = demoSource?.menu || [];
+
+          const resolved = await resolveMenuDishes(demoMenu, restaurant, currentGoals, openaiKey);
+          normalized = resolved.map((d) => ({ ...d, source: 'Demo Menu', fallbackDisclaimer: true }));
+
+          patchRestaurant(restaurant.id, (current) => ({
+            ...current,
+            fallbackStatus: normalized.length ? 'demo' : 'empty',
+            dishes: normalized.length ? normalized : current.dishes,
+            hasMenu: Boolean(normalized.length),
+            menuStatus: normalized.length ? 'Demo Menu' : current.menuStatus,
+          }));
+
+          return;
+        }
+
         patchRestaurant(restaurant.id, (current) => ({
           ...current,
           fallbackStatus: normalized.length ? 'done' : 'empty',
           dishes: normalized.length ? normalized : current.dishes,
         }));
-      } catch {
+      } catch (err) {
         if (searchRunRef.current !== runId) return;
-        patchRestaurant(restaurant.id, (current) => ({ ...current, fallbackStatus: 'failed' }));
+        // final attempt: demo fallback using mock restaurants
+        const demoSource = MOCK_RESTAURANTS[0];
+        const demoMenu = demoSource?.menu || [];
+        const resolved = await resolveMenuDishes(demoMenu, restaurant, currentGoals, openaiKey);
+        const normalized = resolved.map((d) => ({ ...d, source: 'Demo Menu', fallbackDisclaimer: true }));
+
+        patchRestaurant(restaurant.id, (current) => ({
+          ...current,
+          fallbackStatus: normalized.length ? 'demo' : 'failed',
+          dishes: normalized.length ? normalized : current.dishes,
+          hasMenu: Boolean(normalized.length),
+          menuStatus: normalized.length ? 'Demo Menu' : current.menuStatus,
+        }));
       }
     },
     [patchRestaurant]
@@ -346,6 +392,7 @@ export default function App() {
         try {
           candidates = await fetchRestaurantCandidates(lat, lng, googleKey);
         } catch (error) {
+          console.error('[Places API error]', error?.message, error);
           setIsDemoMode(true);
           setApiWarning(getPlacesWarningMessage(error));
           candidates = await fetchRestaurantCandidates(lat, lng, '');
