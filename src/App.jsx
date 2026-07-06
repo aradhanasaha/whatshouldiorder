@@ -1,469 +1,76 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import InputScreen from './components/InputScreen.jsx';
 import ResultsScreen from './components/ResultsScreen.jsx';
-import SettingsModal from './components/SettingsModal.jsx';
-import { estimateMacros, findRestaurantFallbackDishes } from './utils/openai.js';
-import { extractMenuFromDetails, fetchRestaurantCandidates, getPlaceDetails, MOCK_RESTAURANTS } from './utils/places.js';
-import { matchScore } from './utils/scoring.js';
-import { lookupDish } from '../food-db.js';
-
-function isVeg(name) {
-  const nonVeg = ['chicken', 'mutton', 'fish', 'prawn', 'egg', 'meat', 'lamb', 'beef', 'pork', 'keema', 'mince', 'chettinad', 'seekh'];
-  return !nonVeg.some((keyword) => name.toLowerCase().includes(keyword));
-}
-
-function fallbackMacros(name) {
-  const value = name.toLowerCase();
-
-  if (value.includes('chicken') || value.includes('mutton') || value.includes('fish') || value.includes('seekh') || value.includes('prawn')) {
-    return { kcal: 340, protein: 30, carbs: 12, fat: 18 };
-  }
-  if (value.includes('paneer') || value.includes('tofu')) return { kcal: 360, protein: 18, carbs: 14, fat: 24 };
-  if (value.includes('egg') || value.includes('omelette')) return { kcal: 220, protein: 16, carbs: 8, fat: 14 };
-  if (value.includes('biryani')) return { kcal: 520, protein: 22, carbs: 70, fat: 16 };
-  if (value.includes('rice') || value.includes('pulao')) return { kcal: 380, protein: 8, carbs: 72, fat: 6 };
-  if (value.includes('naan') || value.includes('roti') || value.includes('paratha')) return { kcal: 290, protein: 8, carbs: 46, fat: 9 };
-  if (value.includes('salad') || value.includes('bowl') || value.includes('quinoa')) return { kcal: 320, protein: 20, carbs: 30, fat: 14 };
-  if (value.includes('dosa') || value.includes('idli') || value.includes('uttapam')) return { kcal: 250, protein: 6, carbs: 45, fat: 6 };
-  if (value.includes('momo') || value.includes('dumpling')) return { kcal: 280, protein: 14, carbs: 36, fat: 8 };
-  if (value.includes('burger') || value.includes('sandwich') || value.includes('wrap')) return { kcal: 400, protein: 20, carbs: 44, fat: 16 };
-  if (value.includes('soup')) return { kcal: 120, protein: 6, carbs: 16, fat: 4 };
-  return { kcal: 380, protein: 14, carbs: 48, fat: 12 };
-}
-
-function sortRestaurants(restaurants) {
-  const statusRank = (restaurant) => {
-    if (restaurant.hasMenu) return 0;
-    if (restaurant.menuStatus === 'Scanning...') return 1;
-    return 2;
-  };
-
-  return [...restaurants].sort((a, b) => {
-    const rankDiff = statusRank(a) - statusRank(b);
-    if (rankDiff !== 0) return rankDiff;
-    return (a.distance ?? Number.MAX_SAFE_INTEGER) - (b.distance ?? Number.MAX_SAFE_INTEGER);
-  });
-}
-
-function scoreDish(dish, goals) {
-  const mealTarget = {
-    kcal: goals.perMeal.kcal,
-    protein: goals.perMeal.protein,
-    budget: goals.budget,
-  };
-
-  const safeDish = {
-    ...dish,
-    protein: dish.protein ?? 0,
-    carbs: dish.carbs ?? 0,
-    fat: dish.fat ?? 0,
-    price: dish.price ?? 0,
-  };
-
-  const score = matchScore(safeDish, mealTarget);
-  return score >= 40 ? { ...safeDish, score } : null;
-}
-
-function buildRestaurantRecord(candidate) {
-  return {
-    id: candidate.id,
-    name: candidate.displayName?.text || candidate.name || 'Restaurant',
-    rating: candidate.rating ?? null,
-    distance: candidate.distance ?? null,
-    priceLevel: candidate.priceLevel ?? null,
-    address: candidate.formattedAddress || candidate.address || '',
-    menuStatus: candidate.seedMenu ? 'Menu Available' : 'Scanning...',
-    fallbackStatus: 'idle',
-    hasMenu: Boolean(candidate.seedMenu?.length),
-    dishes: [],
-    seedMenu: candidate.seedMenu || [],
-  };
-}
-
-function getPlacesWarningMessage(error) {
-  const message = error?.message || '';
-
-  if (message.includes('Places API 403')) {
-    return 'Google Places access is not enabled for this build right now, so the app has switched to demo restaurants.';
-  }
-
-  if (message.includes('Places API 401')) {
-    return 'The Google Places key looks invalid for this build, so the app has switched to demo restaurants.';
-  }
-
-  return `Places lookup failed (${message.split(':')[0] || 'unknown error'}) - showing demo restaurants instead.`;
-}
+import { discover, fetchAddresses } from './utils/swiggy.js';
 
 export default function App() {
-  const [status, setStatus] = useState('idle');
-  const [goals, setGoals] = useState(null);
+  const [addresses, setAddresses] = useState([]);
+  const [addressesLoading, setAddressesLoading] = useState(true);
+  const [addressesError, setAddressesError] = useState('');
+  const [selectedAddressId, setSelectedAddressId] = useState('');
+
+  const [status, setStatus] = useState('idle'); // idle | loading | done
   const [restaurants, setRestaurants] = useState([]);
-  const [dishes, setDishes] = useState([]);
-  const [selectedRestaurantId, setSelectedRestaurantId] = useState(null);
+  const [query, setQuery] = useState('');
   const [loadingPhase, setLoadingPhase] = useState('');
   const [apiWarning, setApiWarning] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
+  const [mode, setMode] = useState('mock'); // 'mock' | 'shared-local'
   const [showDemoNote, setShowDemoNote] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(true);
-  const searchRunRef = useRef(0);
+
+  const loadAddresses = useCallback(async () => {
+    setAddressesLoading(true);
+    setAddressesError('');
+    try {
+      const res = await fetchAddresses();
+      if (res.mode) setMode(res.mode);
+
+      if (res.status === 401) {
+        setAddressesError('Not signed in to Swiggy MCP. Showing sample addresses only.');
+      } else if (!res.ok) {
+        setAddressesError(res.error || 'Could not load your Swiggy addresses.');
+      }
+
+      setAddresses(res.addresses);
+      if (res.addresses.length) setSelectedAddressId(res.addresses[0].id);
+    } catch {
+      setAddressesError('Could not reach the address service.');
+    } finally {
+      setAddressesLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    const nextDishes = restaurants
-      .flatMap((restaurant) => restaurant.dishes)
-      .sort((a, b) => b.score - a.score);
+    loadAddresses();
+  }, [loadAddresses]);
 
-    setDishes(nextDishes);
-  }, [restaurants]);
+  const handleSearch = useCallback(async ({ addressId, cuisine, budget }) => {
+    setStatus('loading');
+    setRestaurants([]);
+    setQuery(cuisine);
+    setApiWarning('');
+    setMobileSidebarOpen(false);
+    setLoadingPhase('Finding restaurants on Swiggy…');
 
-  const apiKeys = () => ({
-    googleKey: import.meta.env.VITE_GOOGLE_PLACES_API_KEY || localStorage.getItem('wsio_google_key') || '',
-    openaiKey: import.meta.env.VITE_OPENAI_API_KEY || localStorage.getItem('wsio_openai_key') || '',
-  });
+    try {
+      const res = await discover({ addressId, cuisine, budget });
+      if (res.mode) setMode(res.mode);
 
-  const patchRestaurant = useCallback((restaurantId, updater) => {
-    setRestaurants((current) =>
-      sortRestaurants(
-        current.map((restaurant) => (restaurant.id === restaurantId ? updater(restaurant) : restaurant))
-      )
-    );
-  }, []);
-
-  const resolveMenuDishes = useCallback(async (menuItems, restaurant, currentGoals, openaiKey) => {
-    const ready = [];
-    const needsAi = [];
-
-    for (const item of menuItems) {
-      if (currentGoals.diet === 'veg' && !isVeg(item.name)) continue;
-      if (currentGoals.diet === 'non-veg' && isVeg(item.name)) continue;
-
-      const baseDish = {
-        name: item.name,
-        description: item.description || '',
-        price: item.price || 0,
-        restaurantId: restaurant.id,
-        restaurant: {
-          name: restaurant.name,
-          rating: restaurant.rating,
-          distance: restaurant.distance,
-          address: restaurant.address,
-        },
-      };
-
-      if (item.kcal != null) {
-        const scored = scoreDish(
-          {
-            ...baseDish,
-            kcal: item.kcal,
-            protein: item.protein ?? 0,
-            carbs: item.carbs ?? 0,
-            fat: item.fat ?? 0,
-            source: item.source || 'Google Menu',
-          },
-          currentGoals
-        );
-        if (scored) ready.push(scored);
-        continue;
-      }
-
-      const dbMatch = lookupDish(item.name);
-      if (dbMatch) {
-        const scored = scoreDish(
-          {
-            ...baseDish,
-            kcal: dbMatch.kcal,
-            protein: dbMatch.protein,
-            carbs: dbMatch.carbs,
-            fat: dbMatch.fat,
-            source: 'Food DB',
-          },
-          currentGoals
-        );
-        if (scored) ready.push(scored);
+      if (!res.ok) {
+        setApiWarning(res.error || 'Discovery failed. Adjust your search and retry.');
+        setRestaurants([]);
       } else {
-        needsAi.push({ item, baseDish });
+        setRestaurants(res.restaurants);
+        setLoadingPhase(res.restaurants.length ? 'Results are ready.' : 'No restaurants found.');
       }
+    } catch {
+      setApiWarning('Something went wrong while searching. Try again.');
+    } finally {
+      setStatus('done');
     }
-
-    if (!needsAi.length) return ready;
-
-    if (openaiKey) {
-      try {
-        const estimated = await estimateMacros(
-          needsAi.map(({ item }) => ({ name: item.name, description: item.description || '' })),
-          openaiKey
-        );
-        const estimatedMap = new Map(estimated.map((entry) => [entry.name.toLowerCase(), entry]));
-
-        for (const { item, baseDish } of needsAi) {
-          const match = estimatedMap.get(item.name.toLowerCase());
-          const scored = scoreDish(
-            match
-              ? {
-                  ...baseDish,
-                  kcal: match.kcal,
-                  protein: match.protein_g,
-                  carbs: match.carbs_g,
-                  fat: match.fat_g,
-                  source: 'AI Estimated',
-                }
-              : {
-                  ...baseDish,
-                  ...fallbackMacros(item.name),
-                  source: 'AI Estimated',
-                },
-            currentGoals
-          );
-          if (scored) ready.push(scored);
-        }
-
-        return ready;
-      } catch {
-        // Fall through to local heuristic estimates.
-      }
-    }
-
-    for (const { item, baseDish } of needsAi) {
-      const scored = scoreDish(
-        {
-          ...baseDish,
-          ...fallbackMacros(item.name),
-          source: 'AI Estimated',
-        },
-        currentGoals
-      );
-      if (scored) ready.push(scored);
-    }
-
-    return ready;
   }, []);
 
-  const runRestaurantFallback = useCallback(
-    async (restaurant, currentGoals, openaiKey, locationText, runId) => {
-      patchRestaurant(restaurant.id, (current) => ({ ...current, fallbackStatus: 'loading' }));
-
-      try {
-        setLoadingPhase('Expanding search for nearby menus...');
-
-        let dishesFromFallback = [];
-
-        if (openaiKey) {
-          try {
-            dishesFromFallback = await findRestaurantFallbackDishes(
-              {
-                restaurantName: restaurant.name,
-                locationText,
-                mealTarget: {
-                  kcal: currentGoals.perMeal.kcal,
-                  protein: currentGoals.perMeal.protein,
-                  budget: currentGoals.budget,
-                },
-                diet: currentGoals.diet,
-              },
-              openaiKey
-            );
-          } catch (err) {
-            dishesFromFallback = [];
-          }
-        }
-
-        // restore phase after fallback attempt
-        setLoadingPhase('Web fallback finished.');
-
-        if (searchRunRef.current !== runId) return;
-
-        let normalized = (dishesFromFallback || [])
-          .map((dish) =>
-            scoreDish(
-              {
-                name: dish.name,
-                description: dish.description || '',
-                price: dish.price || 0,
-                kcal: dish.kcal,
-                protein: dish.protein,
-                carbs: dish.carbs,
-                fat: dish.fat,
-                source: 'Web Search',
-                fallbackDisclaimer: true,
-                restaurantId: restaurant.id,
-                restaurant: {
-                  name: restaurant.name,
-                  rating: restaurant.rating,
-                  distance: restaurant.distance,
-                  address: restaurant.address,
-                },
-              },
-              currentGoals
-            )
-          )
-          .filter(Boolean);
-
-        // If OpenAI/web fallbacks returned nothing, use local food DB + demo restaurants fallback
-        if (!normalized.length) {
-          // try to find a matching demo restaurant by name
-          const match = MOCK_RESTAURANTS.find((m) => {
-            const mName = (m.displayName?.text || '').toLowerCase();
-            const rName = (restaurant.name || '').toLowerCase();
-            return mName && (rName.includes(mName) || mName.includes(rName));
-          });
-
-          const demoSource = match || MOCK_RESTAURANTS[0];
-          const demoMenu = demoSource?.menu || [];
-
-          const resolved = await resolveMenuDishes(demoMenu, restaurant, currentGoals, openaiKey);
-          normalized = resolved.map((d) => ({ ...d, source: 'Demo Menu', fallbackDisclaimer: true }));
-
-          patchRestaurant(restaurant.id, (current) => ({
-            ...current,
-            fallbackStatus: normalized.length ? 'demo' : 'empty',
-            dishes: normalized.length ? normalized : current.dishes,
-            hasMenu: Boolean(normalized.length),
-            menuStatus: normalized.length ? 'Demo Menu' : current.menuStatus,
-          }));
-
-          return;
-        }
-
-        patchRestaurant(restaurant.id, (current) => ({
-          ...current,
-          fallbackStatus: normalized.length ? 'done' : 'empty',
-          dishes: normalized.length ? normalized : current.dishes,
-        }));
-      } catch (err) {
-        if (searchRunRef.current !== runId) return;
-        // final attempt: demo fallback using mock restaurants
-        const demoSource = MOCK_RESTAURANTS[0];
-        const demoMenu = demoSource?.menu || [];
-        const resolved = await resolveMenuDishes(demoMenu, restaurant, currentGoals, openaiKey);
-        const normalized = resolved.map((d) => ({ ...d, source: 'Demo Menu', fallbackDisclaimer: true }));
-
-        patchRestaurant(restaurant.id, (current) => ({
-          ...current,
-          fallbackStatus: normalized.length ? 'demo' : 'failed',
-          dishes: normalized.length ? normalized : current.dishes,
-          hasMenu: Boolean(normalized.length),
-          menuStatus: normalized.length ? 'Demo Menu' : current.menuStatus,
-        }));
-      }
-    },
-    [patchRestaurant]
-  );
-
-  const handleSearch = useCallback(
-    async (nextGoals) => {
-      const runId = Date.now();
-      searchRunRef.current = runId;
-
-      setGoals(nextGoals);
-      setStatus('loading');
-      setRestaurants([]);
-      setDishes([]);
-      setSelectedRestaurantId(null);
-      setMobileSidebarOpen(false);
-      setLoadingPhase('Finding restaurants near you...');
-      setApiWarning('');
-
-      const { googleKey, openaiKey } = apiKeys();
-      setIsDemoMode(!googleKey);
-
-      let lat = nextGoals.location.lat ?? 12.9716;
-      let lng = nextGoals.location.lng ?? 77.5946;
-
-      try {
-        if (nextGoals.location.type === 'text' && googleKey) {
-          setLoadingPhase('Geocoding your location...');
-          try {
-            const response = await fetch(
-              `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(nextGoals.location.text)}&key=${googleKey}`
-            );
-            const data = await response.json();
-            if (data.results?.[0]) {
-              lat = data.results[0].geometry.location.lat;
-              lng = data.results[0].geometry.location.lng;
-            }
-          } catch {
-            // Keep the default coordinates if geocoding fails.
-          }
-        }
-
-        setLoadingPhase('Finding restaurants near you...');
-        let candidates;
-
-        try {
-          candidates = await fetchRestaurantCandidates(lat, lng, googleKey);
-        } catch (error) {
-          console.error('[Places API error]', error?.message, error);
-          setIsDemoMode(true);
-          setApiWarning(getPlacesWarningMessage(error));
-          candidates = await fetchRestaurantCandidates(lat, lng, '');
-        }
-
-        if (searchRunRef.current !== runId) return;
-
-        const initialRestaurants = candidates.map(buildRestaurantRecord);
-        setRestaurants(sortRestaurants(initialRestaurants));
-        setLoadingPhase('Nearby restaurants are loading...');
-
-        const tasks = initialRestaurants.map(async (restaurant, index) => {
-          const candidate = candidates[index];
-          const menuItems = candidate.seedMenu?.length
-            ? candidate.seedMenu
-            : extractMenuFromDetails(await getPlaceDetails(candidate.id, googleKey));
-
-          if (searchRunRef.current !== runId) return;
-
-          if (menuItems.length) {
-            patchRestaurant(restaurant.id, (current) => ({
-              ...current,
-              hasMenu: true,
-              menuStatus: 'Menu Available',
-              fallbackStatus: 'idle',
-            }));
-
-            setLoadingPhase('Menus and macros are resolving...');
-            const resolvedDishes = await resolveMenuDishes(menuItems, restaurant, nextGoals, openaiKey);
-
-            if (searchRunRef.current !== runId) return;
-
-            patchRestaurant(restaurant.id, (current) => ({
-              ...current,
-              dishes: resolvedDishes,
-            }));
-            return;
-          }
-
-          patchRestaurant(restaurant.id, (current) => ({
-            ...current,
-            hasMenu: false,
-            menuStatus: 'No Menu - Web Search',
-          }));
-
-          setLoadingPhase('Web fallback is trickling in for restaurants without menus...');
-          await runRestaurantFallback(
-            restaurant,
-            nextGoals,
-            openaiKey,
-            nextGoals.location.text || nextGoals.location.address || 'Bangalore',
-            runId
-          );
-        });
-
-        await Promise.allSettled(tasks);
-
-        if (searchRunRef.current !== runId) return;
-
-        setLoadingPhase(dishes.length ? 'Results are ready.' : 'Search complete.');
-        setStatus('done');
-      } catch (error) {
-        console.error('Search failed:', error);
-        if (searchRunRef.current !== runId) return;
-
-        setApiWarning('Something went wrong while searching. You can adjust your goals and retry.');
-        setStatus('done');
-      }
-    },
-    [dishes.length, patchRestaurant, resolveMenuDishes, runRestaurantFallback]
-  );
+  const isMock = mode === 'mock';
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50">
@@ -475,8 +82,13 @@ export default function App() {
         `}
       >
         <InputScreen
+          addresses={addresses}
+          addressesLoading={addressesLoading}
+          addressesError={addressesError}
+          selectedAddressId={selectedAddressId}
+          onSelectAddress={setSelectedAddressId}
+          onReloadAddresses={loadAddresses}
           onSearch={handleSearch}
-          onSettings={() => setShowSettings(true)}
           searching={status === 'loading'}
         />
       </aside>
@@ -484,7 +96,7 @@ export default function App() {
       <main className={`${!mobileSidebarOpen ? 'flex' : 'hidden'} md:flex flex-1 flex-col overflow-y-auto relative`}>
         <div className="absolute right-3 top-3 z-20">
           <button
-            onClick={() => setShowDemoNote((current) => !current)}
+            onClick={() => setShowDemoNote((c) => !c)}
             className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-white text-sm font-bold text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
             aria-label="About this demo"
             title="About this demo"
@@ -493,26 +105,27 @@ export default function App() {
           </button>
 
           {showDemoNote ? (
-            <div className="mt-2 w-[280px] rounded-2xl border border-sky-100 bg-white p-4 text-left shadow-xl shadow-sky-100">
-              <p className="text-xs font-semibold uppercase tracking-wide text-sky-600">Demo Note</p>
+            <div className="mt-2 w-[290px] rounded-2xl border border-sky-100 bg-white p-4 text-left shadow-xl shadow-sky-100">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-600">About this build</p>
               <p className="mt-2 text-sm leading-relaxed text-gray-600">
-                Hey Swiggy team, this is the current demo. Coverage from Google Maps APIs and my own food database is still
-                fairly shallow, and that gap is exactly where Swiggy MCP tools would make this much stronger with deeper
-                restaurant, menu, and ordering coverage.
+                Restaurant discovery, menus and prices come live from <strong>Swiggy MCP</strong> against your own
+                saved addresses. Ordering hands off to Swiggy via deep link today; native in-app cart &amp; checkout
+                (<code>update_food_cart</code> / <code>place_food_order</code>) is the next step. Macro-matching returns
+                as a phase-2 layer on top of the live menu data.
               </p>
             </div>
           ) : null}
         </div>
 
-        {(apiWarning || isDemoMode) && status !== 'idle' && (
-          <div
-            className={`shrink-0 border-b px-4 py-2 text-center text-xs ${
-              apiWarning
-                ? 'border-amber-200 bg-amber-50 text-amber-700'
-                : 'border-blue-100 bg-blue-50 text-blue-600'
-            }`}
-          >
-            {apiWarning || 'Demo Mode - using simulated restaurants because no Google Places key is configured.'}
+        {isMock && status !== 'idle' && (
+          <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-700">
+            Swiggy MCP is unavailable (not signed in) — showing <strong>sample fallback data</strong>, not live results.
+          </div>
+        )}
+
+        {apiWarning && (
+          <div className="shrink-0 border-b border-red-200 bg-red-50 px-4 py-2 text-center text-xs text-red-700">
+            {apiWarning}
           </div>
         )}
 
@@ -520,27 +133,21 @@ export default function App() {
           onClick={() => setMobileSidebarOpen(true)}
           className="absolute left-3 top-3 z-10 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm hover:bg-gray-50 md:hidden"
         >
-          Back to goals
+          Back to search
         </button>
 
         {status === 'idle' ? (
           <EmptyState />
         ) : (
           <ResultsScreen
-            dishes={dishes}
-            goals={goals}
             restaurants={restaurants}
-            selectedRestaurantId={selectedRestaurantId}
-            onSelectRestaurant={(restaurantId) =>
-              setSelectedRestaurantId((current) => (current === restaurantId ? null : restaurantId))
-            }
+            query={query}
             loadingPhase={loadingPhase}
             isLoading={status === 'loading'}
+            mode={mode}
           />
         )}
       </main>
-
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
@@ -551,10 +158,10 @@ function EmptyState() {
       <div className="mb-6 select-none text-8xl">🍽️</div>
       <h2 className="mb-2 text-2xl font-bold tracking-tight text-gray-800">What should you order?</h2>
       <p className="mb-8 max-w-xs text-sm leading-relaxed text-gray-400">
-        Set your calorie and macro goals in the sidebar to discover dishes from nearby restaurants that actually fit your targets.
+        Pick a delivery address, a craving, and a budget — we’ll pull matching restaurants live from Swiggy.
       </p>
       <div className="flex flex-wrap justify-center gap-2">
-        {['Veg filter', 'Macro-matched', 'Budget-aware', 'Location-based', 'AI nutrition'].map((feature) => (
+        {['Live Swiggy data', 'Your saved addresses', 'Budget-aware', 'Real ratings & offers'].map((feature) => (
           <span key={feature} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-500 shadow-sm">
             {feature}
           </span>

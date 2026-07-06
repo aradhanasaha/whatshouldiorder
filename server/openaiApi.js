@@ -1,3 +1,8 @@
+// QUARANTINED (phase 2): macro estimation. Not called by the rn Swiggy-MCP discovery flow.
+// It stays reachable at /api/estimate-macros so the phase-2 health/macro layer can switch it
+// back on over live Swiggy menu data. The old Places/web-search restaurant fallback that used
+// to live here was removed with the Google Places layer.
+
 export function jsonResponse(res, status, payload) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
@@ -70,87 +75,8 @@ Respond ONLY with:
   return JSON.parse(data.choices?.[0]?.message?.content || '{"results":[]}');
 }
 
-async function restaurantFallbackViaSearch(apiKey, payload) {
-  const input = `You are helping a user choose food from a restaurant.
-
-Restaurant: ${payload.restaurantName}
-Location hint: ${payload.locationText || 'Unknown'}
-Diet: ${payload.diet || 'all'}
-Goal calories per meal: ${payload.mealTarget?.kcal ?? 'Unknown'}
-Goal protein per meal: ${payload.mealTarget?.protein ?? 'Unknown'}
-Budget per meal INR: ${payload.mealTarget?.budget ?? 'Unknown'}
-
-Use web search results if available to infer likely dishes sold by this restaurant. Return the top 3 dishes that best fit the user's goals.
-
-Respond ONLY with JSON:
-{"dishes":[{"name":"dish name","description":"short description","price":number,"kcal":number,"protein":number,"carbs":number,"fat":number,"source":"Web Search"}]}`;
-
-  const res = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      tools: [{ type: 'web_search_preview' }],
-      input,
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenAI responses ${res.status}`);
-  }
-
-  const data = await res.json();
-  return JSON.parse(data.output_text || '{"dishes":[]}');
-}
-
-async function restaurantFallbackViaChat(apiKey, payload) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      max_tokens: 900,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You recommend likely restaurant dishes and estimate their nutrition. Always respond with valid JSON only. Treat menu presence and nutrition as estimates.',
-        },
-        {
-          role: 'user',
-          content: `Restaurant: ${payload.restaurantName}
-Location hint: ${payload.locationText || 'Unknown'}
-Diet: ${payload.diet || 'all'}
-Goal calories per meal: ${payload.mealTarget?.kcal ?? 'Unknown'}
-Goal protein per meal: ${payload.mealTarget?.protein ?? 'Unknown'}
-Budget per meal INR: ${payload.mealTarget?.budget ?? 'Unknown'}
-
-Infer the 3 most likely dishes this restaurant sells that best fit the user's goals. Return reasonable estimated macros and price.
-
-Respond ONLY with JSON:
-{"dishes":[{"name":"dish name","description":"short description","price":number,"kcal":number,"protein":number,"carbs":number,"fat":number,"source":"Web Search"}]}`,
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`OpenAI ${res.status}`);
-  }
-
-  const data = await res.json();
-  return JSON.parse(data.choices?.[0]?.message?.content || '{"dishes":[]}');
-}
-
 export function getApiKey(env = {}, body = {}) {
-  return env.VITE_OPENAI_API_KEY || body.apiKey || '';
+  return env.OPENAI_API_KEY || env.VITE_OPENAI_API_KEY || body.apiKey || '';
 }
 
 export async function handleEstimateMacros(body, env = {}) {
@@ -178,43 +104,5 @@ export async function handleEstimateMacros(body, env = {}) {
     return { status: 200, payload: result };
   } catch (error) {
     return { status: 500, payload: { error: error.message || 'Failed to estimate macros.' } };
-  }
-}
-
-export async function handleRestaurantFallback(body, env = {}) {
-  const apiKey = getApiKey(env, body);
-
-  if (!apiKey) {
-    return { status: 400, payload: { error: 'Missing OpenAI API key.' } };
-  }
-
-  // Prefer Places-only flow to avoid OpenAI token usage.
-  try {
-    // Dynamically import the Places fallback to keep startup light.
-    const { restaurantFallbackViaPlaces } = await import('./placesFallback.js');
-    try {
-      const placesResult = await restaurantFallbackViaPlaces(body, env);
-      if (placesResult?.dishes?.length) {
-        return { status: 200, payload: placesResult };
-      }
-    } catch (err) {
-      // ignore and fall back to OpenAI flows
-    }
-  } catch (err) {
-    // ignore import failure and fall back
-  }
-
-  try {
-    const result = await restaurantFallbackViaSearch(apiKey, body);
-    if (result?.dishes?.length) return { status: 200, payload: result };
-  } catch (err) {
-    // try chat fallback next
-  }
-
-  try {
-    const result = await restaurantFallbackViaChat(apiKey, body);
-    return { status: 200, payload: result };
-  } catch (error) {
-    return { status: 500, payload: { error: error.message || 'Failed restaurant fallback.' } };
   }
 }

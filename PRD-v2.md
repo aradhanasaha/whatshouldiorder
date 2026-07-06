@@ -234,24 +234,35 @@ Both open in new tab. Show Swiggy as primary CTA, Zomato as secondary link.
 
 ---
 
-## v3 Swiggy MCP Upgrade Plan
-> Include this section in Builders Club application to show roadmap
+## v3 — Swiggy MCP (implemented)
+> Status as of this build. Access approved; discovery now runs live on Swiggy MCP.
 
-Once Builders Club access is approved, the following swaps happen:
+Swiggy MCP is a **remote HTTP** server (`https://mcp.swiggy.com/food`) with **per-user OAuth** —
+there is no anonymous/service-token mode. The app connects an MCP client **server-side** (one
+session per search) and calls tools deterministically; no LLM drives the tools.
 
-| Demo (v2) | v3 with Swiggy MCP |
+**What shipped (rn — restaurant-centric):**
+
+| Demo (v2, Google Places) | v3 (Swiggy MCP, now) |
 |---|---|
-| Google Places Nearby Search | `search_restaurants` — Swiggy native, delivery-aware |
-| Google Places `businessMenus` | `get_restaurant_menu` — full Swiggy menu with real prices |
-| OpenAI estimation fallback | `search_menu` — query dishes across restaurants by name |
-| Swiggy deep link | `update_food_cart` + `place_food_order` — native in-app ordering |
-| Price data from Places API | Real-time Swiggy prices |
+| Google Places Nearby Search | `search_restaurants` — live, delivery-aware, real ratings/offers/ETAs |
+| Detect/type location + Google geocode | `get_addresses` — user's saved Swiggy addresses (no lat/lng needed) |
+| Places `businessMenus` (70–80% empty) + OpenAI/web-search fallbacks | **deleted** — real menu data makes the estimation scaffolding unnecessary |
+| Price guessed from `priceLevel` | real `costForTwo` from Swiggy, used for budget filtering |
+| Deep link `search?query=name` | deep link from the **real Swiggy restaurant identity** |
 
-This means:
-- No more estimation needed for dishes — real Swiggy menu data has dish names + prices
-- Macro estimation via OpenAI remains for dishes without nutrition data
-- Full in-app ordering removes the deep link friction entirely
-- Coverage becomes 100% of Swiggy's restaurant network, not just Places-listed ones
+**Auth rollout:** (A) **now** — local-live: developer OAuths their own Swiggy account via the
+already-whitelisted `localhost` redirect; the public deploy shows clearly-labelled sample
+fallback data. (C) **next** — per-visitor OAuth once the production domain is whitelisted. The
+auth/session layer sits behind its own seam so this is a swap, not a rewrite.
+
+**Deferred (next steps, not blockers):**
+- **Veg/non-veg** filtering — `search_restaurants` carries no veg data; belongs at the dish
+  level via `search_menu` (`vegFilter`) in the menu drilldown.
+- **Macro matching** — Swiggy exposes no nutrition, so calorie/protein matching returns as a
+  phase-2 layer (food DB + OpenAI `gpt-4o-mini`) over live menu data. Code is quarantined,
+  unwired, behind the seam.
+- **Native ordering** — `update_food_cart` + `place_food_order` (COD) to replace the deep link.
 
 ---
 
