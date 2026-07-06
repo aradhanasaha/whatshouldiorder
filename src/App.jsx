@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import InputScreen from './components/InputScreen.jsx';
 import ResultsScreen from './components/ResultsScreen.jsx';
 import { discover, fetchAddresses } from './utils/swiggy.js';
@@ -10,7 +10,9 @@ export default function App() {
   const [selectedAddressId, setSelectedAddressId] = useState('');
 
   const [status, setStatus] = useState('idle'); // idle | loading | done
-  const [restaurants, setRestaurants] = useState([]);
+  const [dishes, setDishes] = useState([]);
+  const [orderAgain, setOrderAgain] = useState([]);
+  const [controlledCuisine, setControlledCuisine] = useState('');
   const [query, setQuery] = useState('');
   const [loadingPhase, setLoadingPhase] = useState('');
   const [apiWarning, setApiWarning] = useState('');
@@ -44,24 +46,28 @@ export default function App() {
     loadAddresses();
   }, [loadAddresses]);
 
-  const handleSearch = useCallback(async ({ addressId, cuisine, budget }) => {
+  const lastSearchRef = useRef(null);
+
+  const runDiscover = useCallback(async ({ addressId, cuisine, budget, veg }) => {
+    lastSearchRef.current = { addressId, budget, veg };
     setStatus('loading');
-    setRestaurants([]);
+    setDishes([]);
     setQuery(cuisine);
     setApiWarning('');
     setMobileSidebarOpen(false);
-    setLoadingPhase('Finding restaurants on Swiggy…');
+    setLoadingPhase('Finding dishes on Swiggy…');
 
     try {
-      const res = await discover({ addressId, cuisine, budget });
+      const res = await discover({ addressId, cuisine, budget, veg });
       if (res.mode) setMode(res.mode);
 
       if (!res.ok) {
         setApiWarning(res.error || 'Discovery failed. Adjust your search and retry.');
-        setRestaurants([]);
+        setDishes([]);
       } else {
-        setRestaurants(res.restaurants);
-        setLoadingPhase(res.restaurants.length ? 'Results are ready.' : 'No restaurants found.');
+        setDishes(res.dishes);
+        setOrderAgain(res.orderAgain);
+        setLoadingPhase(res.dishes.length ? 'Ranked by rating, distance, and your order history.' : 'No dishes found.');
       }
     } catch {
       setApiWarning('Something went wrong while searching. Try again.');
@@ -69,6 +75,17 @@ export default function App() {
       setStatus('done');
     }
   }, []);
+
+  const handleSearch = runDiscover;
+
+  const handleReorder = useCallback(
+    (dishName) => {
+      setControlledCuisine(dishName);
+      const last = lastSearchRef.current;
+      if (last) runDiscover({ ...last, cuisine: dishName });
+    },
+    [runDiscover]
+  );
 
   const isMock = mode === 'mock';
 
@@ -90,6 +107,7 @@ export default function App() {
           onReloadAddresses={loadAddresses}
           onSearch={handleSearch}
           searching={status === 'loading'}
+          controlledCuisine={controlledCuisine}
         />
       </aside>
 
@@ -108,10 +126,10 @@ export default function App() {
             <div className="mt-2 w-[290px] rounded-2xl border border-sky-100 bg-white p-4 text-left shadow-xl shadow-sky-100">
               <p className="text-xs font-semibold uppercase tracking-wide text-sky-600">About this build</p>
               <p className="mt-2 text-sm leading-relaxed text-gray-600">
-                Restaurant discovery, menus and prices come live from <strong>Swiggy MCP</strong> against your own
-                saved addresses. Ordering hands off to Swiggy via deep link today; native in-app cart &amp; checkout
-                (<code>update_food_cart</code> / <code>place_food_order</code>) is the next step. Macro-matching returns
-                as a phase-2 layer on top of the live menu data.
+                Dishes, prices and your order history come live from <strong>Swiggy MCP</strong> against your own
+                saved addresses. Results are ranked by a deterministic model over rating, distance, and what you’ve
+                ordered before. Ordering hands off via deep link today; native cart &amp; checkout
+                (<code>update_food_cart</code> / <code>place_food_order</code>) is the next step.
               </p>
             </div>
           ) : null}
@@ -140,11 +158,13 @@ export default function App() {
           <EmptyState />
         ) : (
           <ResultsScreen
-            restaurants={restaurants}
+            dishes={dishes}
+            orderAgain={orderAgain}
             query={query}
             loadingPhase={loadingPhase}
             isLoading={status === 'loading'}
             mode={mode}
+            onReorder={handleReorder}
           />
         )}
       </main>
@@ -158,10 +178,11 @@ function EmptyState() {
       <div className="mb-6 select-none text-8xl">🍽️</div>
       <h2 className="mb-2 text-2xl font-bold tracking-tight text-gray-800">What should you order?</h2>
       <p className="mb-8 max-w-xs text-sm leading-relaxed text-gray-400">
-        Pick a delivery address, a craving, and a budget — we’ll pull matching restaurants live from Swiggy.
+        Pick an address, a craving, and a budget — we’ll surface matching dishes live from Swiggy, ranked by
+        rating, distance, and what you’ve ordered before.
       </p>
       <div className="flex flex-wrap justify-center gap-2">
-        {['Live Swiggy data', 'Your saved addresses', 'Budget-aware', 'Real ratings & offers'].map((feature) => (
+        {['Live Swiggy dishes', 'Ranked for you', 'Order-again', 'Budget & veg aware'].map((feature) => (
           <span key={feature} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-500 shadow-sm">
             {feature}
           </span>

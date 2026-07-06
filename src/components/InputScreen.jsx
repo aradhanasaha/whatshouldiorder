@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const CUISINE_PRESETS = [
   'Chinese', 'North Indian', 'South Indian', 'Biryani', 'Pizza', 'Healthy', 'Rolls', 'Desserts',
@@ -29,15 +29,22 @@ export default function InputScreen({
   onReloadAddresses,
   onSearch,
   searching,
+  controlledCuisine,
 }) {
-  const [cuisine, setCuisine] = useState('Chinese');
-  const [budget, setBudget] = useState(500);
+  const [cuisine, setCuisine] = useState(controlledCuisine || 'Chinese');
+  const [budget, setBudget] = useState(300);
+  const [diet, setDiet] = useState('all');
+
+  // Allow the parent (e.g. an "Order again" chip) to drive the craving field.
+  useEffect(() => {
+    if (controlledCuisine) setCuisine(controlledCuisine);
+  }, [controlledCuisine]);
 
   const canSearch = !searching && Boolean(selectedAddressId) && cuisine.trim().length > 0;
 
   const handleSearch = () => {
     if (!canSearch) return;
-    onSearch({ addressId: selectedAddressId, cuisine: cuisine.trim(), budget });
+    onSearch({ addressId: selectedAddressId, cuisine: cuisine.trim(), budget, veg: diet });
   };
 
   return (
@@ -121,16 +128,36 @@ export default function InputScreen({
         </div>
       </div>
 
+      {/* Diet */}
+      <div>
+        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2.5 block">Diet</label>
+        <div className="flex gap-1.5">
+          {[['all', '🍽️ All'], ['veg', '🥦 Veg'], ['non-veg', '🍗 Non-veg']].map(([val, label]) => (
+            <button
+              key={val}
+              onClick={() => setDiet(val)}
+              className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                diet === val
+                  ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/30'
+                  : 'bg-white/5 text-gray-500 hover:bg-white/10 hover:text-gray-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Budget */}
       <div>
         <div className="flex justify-between items-baseline mb-2.5">
-          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Budget · cost for two</label>
+          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Budget per dish</label>
           <span className="font-bold text-base text-green-400">₹{budget}</span>
         </div>
-        <DarkSlider value={budget} min={150} max={1500} step={50} onChange={(e) => setBudget(+e.target.value)} />
+        <DarkSlider value={budget} min={50} max={800} step={10} onChange={(e) => setBudget(+e.target.value)} />
         <div className="flex justify-between text-xs text-gray-700 mt-1.5">
-          <span>₹150</span>
-          <span>₹1500</span>
+          <span>₹50</span>
+          <span>₹800</span>
         </div>
       </div>
 
@@ -146,7 +173,7 @@ export default function InputScreen({
             : 'bg-white/5 text-gray-600 cursor-not-allowed'
         }`}
       >
-        {searching ? '⏳ Finding…' : 'Find Restaurants →'}
+        {searching ? '⏳ Finding…' : 'Find Dishes →'}
       </button>
     </div>
   );

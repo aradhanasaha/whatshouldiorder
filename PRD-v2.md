@@ -241,15 +241,22 @@ Swiggy MCP is a **remote HTTP** server (`https://mcp.swiggy.com/food`) with **pe
 there is no anonymous/service-token mode. The app connects an MCP client **server-side** (one
 session per search) and calls tools deterministically; no LLM drives the tools.
 
-**What shipped (rn — restaurant-centric):**
+**What shipped (v3 — dish-centric, personalized):**
 
 | Demo (v2, Google Places) | v3 (Swiggy MCP, now) |
 |---|---|
-| Google Places Nearby Search | `search_restaurants` — live, delivery-aware, real ratings/offers/ETAs |
+| Google Places Nearby Search | `search_menu` — live **dishes** across restaurants for a craving |
 | Detect/type location + Google geocode | `get_addresses` — user's saved Swiggy addresses (no lat/lng needed) |
 | Places `businessMenus` (70–80% empty) + OpenAI/web-search fallbacks | **deleted** — real menu data makes the estimation scaffolding unnecessary |
-| Price guessed from `priceLevel` | real `costForTwo` from Swiggy, used for budget filtering |
+| Price guessed from `priceLevel` | real per-dish price from Swiggy, used for budget filtering |
+| No personalization | **order history** (`get_food_orders` → `get_food_order_details`) drives an "Order again" strip + a ranking boost |
+| `isVeg()` keyword hack | **veg/non-veg** filtering via `search_menu`'s native `vegFilter` |
 | Deep link `search?query=name` | deep link from the **real Swiggy restaurant identity** |
+
+**Deterministic ranking** (no LLM, tunable in `server/ranking.js`): each in-budget, available dish is
+scored `0.45·rating + 0.25·proximity + 0.30·history`, where history = exact reorder (1.0) / same
+restaurant (0.7) / top cuisine (0.4), lifted by order frequency. Veg/non-veg honored via `search_menu`'s
+native `vegFilter`.
 
 **Auth rollout:** (A) **now** — local-live: developer OAuths their own Swiggy account via the
 already-whitelisted `localhost` redirect; the public deploy shows clearly-labelled sample
@@ -257,10 +264,8 @@ fallback data. (C) **next** — per-visitor OAuth once the production domain is 
 auth/session layer sits behind its own seam so this is a swap, not a rewrite.
 
 **Deferred (next steps, not blockers):**
-- **Veg/non-veg** filtering — `search_restaurants` carries no veg data; belongs at the dish
-  level via `search_menu` (`vegFilter`) in the menu drilldown.
 - **Macro matching** — Swiggy exposes no nutrition, so calorie/protein matching returns as a
-  phase-2 layer (food DB + OpenAI `gpt-4o-mini`) over live menu data. Code is quarantined,
+  later layer (food DB + OpenAI `gpt-4o-mini`) folded into the ranking score. Code is quarantined,
   unwired, behind the seam.
 - **Native ordering** — `update_food_cart` + `place_food_order` (COD) to replace the deep link.
 

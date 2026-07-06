@@ -17,14 +17,14 @@ export async function fetchAddresses() {
   return { ok, status, addresses: data.addresses || [], error: data.error || null, mode: data.mode };
 }
 
-/** Discover restaurants for a cuisine within budget, near the chosen address. */
+/** Discover dishes for a craving within budget, ranked by rating/distance/history. */
 export async function discover({ addressId, cuisine, budget, veg }) {
   const { ok, status, data } = await postJson('/api/discover', { addressId, cuisine, budget, veg });
   return {
     ok,
     status,
-    restaurants: data.restaurants || [],
-    vegApplied: data.vegApplied ?? false,
+    dishes: data.dishes || [],
+    orderAgain: data.orderAgain || [],
     error: data.error || null,
     mode: data.mode,
   };
