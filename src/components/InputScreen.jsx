@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 const CUISINE_PRESETS = [
-  'Chinese', 'North Indian', 'South Indian', 'Biryani', 'Pizza', 'Healthy', 'Rolls', 'Desserts',
+  'Chinese', 'North Indian', 'South Indian', 'Biryani', 'Pizza', 'Rolls', 'Desserts', 'Salad',
 ];
 
 function DarkSlider({ value, min, max, step = 1, onChange }) {
@@ -29,16 +29,10 @@ export default function InputScreen({
   onReloadAddresses,
   onSearch,
   searching,
-  controlledCuisine,
 }) {
-  const [cuisine, setCuisine] = useState(controlledCuisine || 'Chinese');
+  const [cuisine, setCuisine] = useState('Chinese');
   const [budget, setBudget] = useState(300);
   const [diet, setDiet] = useState('all');
-
-  // Allow the parent (e.g. an "Order again" chip) to drive the craving field.
-  useEffect(() => {
-    if (controlledCuisine) setCuisine(controlledCuisine);
-  }, [controlledCuisine]);
 
   const canSearch = !searching && Boolean(selectedAddressId) && cuisine.trim().length > 0;
 

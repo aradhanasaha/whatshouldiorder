@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import InputScreen from './components/InputScreen.jsx';
 import ResultsScreen from './components/ResultsScreen.jsx';
 import { discover, fetchAddresses } from './utils/swiggy.js';
@@ -12,7 +12,6 @@ export default function App() {
   const [status, setStatus] = useState('idle'); // idle | loading | done
   const [dishes, setDishes] = useState([]);
   const [orderAgain, setOrderAgain] = useState([]);
-  const [controlledCuisine, setControlledCuisine] = useState('');
   const [query, setQuery] = useState('');
   const [loadingPhase, setLoadingPhase] = useState('');
   const [apiWarning, setApiWarning] = useState('');
@@ -46,12 +45,10 @@ export default function App() {
     loadAddresses();
   }, [loadAddresses]);
 
-  const lastSearchRef = useRef(null);
-
   const runDiscover = useCallback(async ({ addressId, cuisine, budget, veg }) => {
-    lastSearchRef.current = { addressId, budget, veg };
     setStatus('loading');
     setDishes([]);
+    setOrderAgain([]);
     setQuery(cuisine);
     setApiWarning('');
     setMobileSidebarOpen(false);
@@ -78,15 +75,6 @@ export default function App() {
 
   const handleSearch = runDiscover;
 
-  const handleReorder = useCallback(
-    (dishName) => {
-      setControlledCuisine(dishName);
-      const last = lastSearchRef.current;
-      if (last) runDiscover({ ...last, cuisine: dishName });
-    },
-    [runDiscover]
-  );
-
   const isMock = mode === 'mock';
 
   return (
@@ -107,7 +95,6 @@ export default function App() {
           onReloadAddresses={loadAddresses}
           onSearch={handleSearch}
           searching={status === 'loading'}
-          controlledCuisine={controlledCuisine}
         />
       </aside>
 
@@ -164,7 +151,6 @@ export default function App() {
             loadingPhase={loadingPhase}
             isLoading={status === 'loading'}
             mode={mode}
-            onReorder={handleReorder}
           />
         )}
       </main>

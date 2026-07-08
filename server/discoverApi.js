@@ -4,11 +4,19 @@
 
 import { openTransport } from './mcp/transport.js';
 import { getSession } from './mcp/auth.js';
-import { buildHistoryProfile, getAddresses, getRestaurantMenu, searchRestaurants } from './mcp/swiggyFood.js';
+import { buildHistoryProfile, getAddresses, getRestaurantMenu, searchRestaurants, swiggyDeepLink } from './mcp/swiggyFood.js';
 import { rankDishes } from './ranking.js';
+import { filterByDishCategory } from './dishKeywords.js';
 
 // How many top restaurants to expand into menus per search (bounds latency of the N menu calls).
 const MENU_FANOUT = 6;
+
+// Some cravings aren't queries that return restaurants ("desserts"/"bakery" return dish stubs).
+// Map them to terms that DO return real restaurants; a term with no mapping searches as-is.
+const CUISINE_QUERIES = {
+  desserts: ['cake', 'ice cream'],
+};
+const queriesFor = (c) => CUISINE_QUERIES[c.toLowerCase().trim()] || [c];
 
 // Per-address history cache — history is N+1 MCP calls, so fetch once and reuse across searches.
 const HISTORY_TTL_MS = 10 * 60 * 1000;
@@ -56,14 +64,18 @@ export async function handleDiscover(body = {}, env = {}, req = null) {
   try {
     const profile = await ensureHistory(transport, addressId, session.mode);
 
-    // Discovery = cuisine → restaurants → each restaurant's real menu → dishes.
+    // Discovery = craving → restaurants → each restaurant's real menu → dishes.
     // NOTE on Swiggy behaviour: search_restaurants adapts to the query. A CUISINE ("chinese")
-    // returns real restaurants (with rating/distance/costForTwo). A specific DISH ("momo")
-    // returns thin dish *stubs* (id = menu_item_id, no rating/price/restaurant) that can't be
-    // expanded into a menu — so we keep only real restaurants and rely on cuisine discovery.
-    const found = await searchRestaurants(transport, { addressId, query: cuisine });
-    const restaurants = found.filter((r) => r.rating != null || r.costForTwo != null);
-    const top = restaurants.slice(0, MENU_FANOUT);
+    // returns real restaurants (with rating/distance/costForTwo). A specific DISH ("momo") or a
+    // dish-shaped term ("desserts") returns thin dish *stubs* that can't be expanded — so we map
+    // such cravings to restaurant-returning terms (queriesFor) and keep only real restaurants.
+    const terms = queriesFor(cuisine);
+    const found = (await Promise.all(terms.map((q) => searchRestaurants(transport, { addressId, query: q }).catch(() => [])))).flat();
+    const byId = new Map();
+    for (const r of found) {
+      if ((r.rating != null || r.costForTwo != null) && !byId.has(r.id)) byId.set(r.id, r);
+    }
+    const top = [...byId.values()].slice(0, MENU_FANOUT);
 
     const menus = await Promise.all(
       top.map((r) =>
@@ -97,11 +109,17 @@ export async function handleDiscover(body = {}, env = {}, req = null) {
       return true;
     });
 
-    // If the craving reads as a specific dish, narrow to name matches; otherwise (a broad cuisine)
-    // keep the whole matched-restaurant pool and let ranking surface the best.
-    const q = cuisine.toLowerCase().trim();
-    const named = dishes.filter((d) => d.name.toLowerCase().includes(q));
-    if (named.length >= 4) dishes = named;
+    // Category dictionary first (e.g. "Desserts" → keep only cake/pastry/mithai dishes, dropping
+    // the idli/dosa that sweet shops also list). Falls back to name-narrowing for specific-dish
+    // cravings; broad cuisines keep the whole matched-restaurant pool for ranking to sort.
+    const categoryFiltered = filterByDishCategory(dishes, cuisine);
+    if (categoryFiltered) {
+      if (categoryFiltered.length) dishes = categoryFiltered;
+    } else {
+      const q = cuisine.toLowerCase().trim();
+      const named = dishes.filter((d) => d.name.toLowerCase().includes(q));
+      if (named.length >= 4) dishes = named;
+    }
 
     // Hard filters: budget, in-stock, veg.
     if (typeof budget === 'number') dishes = dishes.filter((d) => d.price == null || d.price <= budget);
@@ -111,17 +129,25 @@ export async function handleDiscover(body = {}, env = {}, req = null) {
 
     const ranked = rankDishes(dishes, profile).slice(0, 60); // cap the grid
 
-    // "Order again" is scoped to the current craving — a past dish is relevant if its name or
-    // cuisine relates to the query — so a "Desserts" search never surfaces past chicken orders.
+    // "Order again" = your recent past orders that are relevant to this craving (matched on the
+    // restaurant's cuisines / the query terms), so it appears whenever you have a fitting past
+    // order — but a "Desserts" search never shows a past chicken order. Chips deep-link to Swiggy.
+    const termsLc = terms.map((t) => t.toLowerCase());
+    const ql = cuisine.toLowerCase().trim();
     const relevant = (d) => {
-      const name = d.name.toLowerCase();
-      if (name.includes(q) || q.includes(name)) return true;
-      return (d.cuisines || []).some((c) => c.includes(q) || q.includes(c));
+      const cz = d.cuisines || []; // already lowercased in buildHistoryProfile
+      if (cz.some((c) => termsLc.includes(c) || c.includes(ql) || ql.includes(c))) return true;
+      const n = d.name.toLowerCase();
+      return n.includes(ql) || termsLc.some((t) => n.includes(t));
     };
     const orderAgain = (profile?.recentDishes || [])
       .filter(relevant)
       .slice(0, 6)
-      .map((d) => ({ name: d.name, restaurantName: d.restaurantName }));
+      .map((d) => ({
+        name: d.name,
+        restaurantName: d.restaurantName,
+        swiggyUrl: swiggyDeepLink({ restaurantName: d.restaurantName }),
+      }));
 
     return { status: 200, payload: { dishes: ranked, orderAgain, mode: session.mode, vegApplied: true } };
   } catch (error) {

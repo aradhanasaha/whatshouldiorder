@@ -23,7 +23,7 @@ function sortDishes(dishes, sort) {
   }
 }
 
-export default function ResultsScreen({ dishes, orderAgain, query, loadingPhase, isLoading, mode, onReorder }) {
+export default function ResultsScreen({ dishes, orderAgain, query, loadingPhase, isLoading, mode }) {
   const [sort, setSort] = useState('match');
   const sorted = sortDishes(dishes, sort);
   const isLive = mode === 'shared-local';
@@ -70,15 +70,17 @@ export default function ResultsScreen({ dishes, orderAgain, query, loadingPhase,
           <p className="mb-2 text-xs font-bold uppercase tracking-wider text-orange-600">Order again</p>
           <div className="flex gap-2 overflow-x-auto scrollbar-hide">
             {orderAgain.map((d, i) => (
-              <button
+              <a
                 key={`${d.name}-${i}`}
-                onClick={() => onReorder?.(d.name)}
+                href={d.swiggyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="shrink-0 rounded-full border border-orange-200 bg-white px-3 py-1.5 text-left text-xs shadow-sm transition-colors hover:bg-orange-50"
-                title={d.restaurantName ? `from ${d.restaurantName}` : ''}
+                title={d.restaurantName ? `Reorder from ${d.restaurantName} ↗` : 'Reorder ↗'}
               >
                 <span className="font-semibold text-gray-800">{d.name}</span>
                 {d.restaurantName ? <span className="ml-1 text-gray-400">· {d.restaurantName}</span> : null}
-              </button>
+              </a>
             ))}
           </div>
         </div>
