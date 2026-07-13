@@ -1,10 +1,10 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import { openaiApiPlugin } from './server/openaiApiPlugin.js';
+import { apiPlugin } from './server/apiPlugin.js';
 
 export default defineConfig({
-  plugins: [react(), openaiApiPlugin()],
+  plugins: [react(), apiPlugin()],
   resolve: {
     alias: {
       'food-db': path.resolve(__dirname, 'food-db.js'),
