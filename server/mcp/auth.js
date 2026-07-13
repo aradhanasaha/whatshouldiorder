@@ -19,6 +19,12 @@ export function getSession(env = {}, req = null) {
     return { accessToken: 'mock-session', mode: 'mock' };
   }
 
+  // (C) per-visitor: the API layer (server/app.js requireAuth) attaches the current user's
+  // decrypted+refreshed Swiggy token to the request. Prefer it.
+  if (req && req.swiggyToken) {
+    return { accessToken: req.swiggyToken, mode: 'user' };
+  }
+
   // proxy transport (default) owns OAuth via mcp-remote's cached session — no token needed here.
   const transport = (env.SWIGGY_MCP_TRANSPORT || 'proxy').toLowerCase();
   if (transport !== 'direct') {
@@ -29,7 +35,4 @@ export function getSession(env = {}, req = null) {
   const token = env.SWIGGY_ACCESS_TOKEN || '';
   if (!token) return null;
   return { accessToken: token, mode: 'shared-local' };
-
-  // (C) per-visitor — future: read the visitor's token off `req` (cookie/session store).
-  // return readVisitorSession(req);
 }

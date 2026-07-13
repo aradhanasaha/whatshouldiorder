@@ -1,0 +1,39 @@
+# Render Blueprint — deploy the per-user backend + Postgres.
+# In Render: New → Blueprint → point at this repo. It creates the web service + database.
+# After first deploy, no manual PUBLIC_URL needed (RENDER_EXTERNAL_URL is auto-set).
+services:
+  - type: web
+    name: wsio-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/app.js
+    healthCheckPath: /health
+    envVars:
+      - key: SWIGGY_MCP_MODE
+        value: live
+      - key: SWIGGY_MCP_TRANSPORT
+        value: direct
+      - key: JWT_SECRET
+        generateValue: true
+      - key: TOKEN_ENC_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wsio-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      # Beta distribution (fill after EAS build + Resend signup):
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: RESEND_API_KEY
+        sync: false
+      - key: APK_URL
+        sync: false
+      - key: BETA_FROM_EMAIL
+        sync: false
+
+databases:
+  - name: wsio-db
+    plan: free
