@@ -7,14 +7,14 @@
 //   { id, name, price, isVeg, restaurantId, restaurantName, rating, distanceKm,
 //     hasVariants, hasAddons, source: 'Swiggy', swiggyUrl }
 
-/** Build the "Order on Swiggy" link from the real Swiggy restaurant identity. */
+/**
+ * "Order on Swiggy" link. `https://www.swiggy.com/menu/<restaurantId>` is the real menu page
+ * (verified 200); on Android this opens the Swiggy app via app links. Falls back to a name
+ * search only when we have no restaurantId.
+ */
 export function swiggyDeepLink({ restaurantId, restaurantName }) {
-  // TODO(live): confirm Swiggy's canonical restaurant URL pattern from a real response and
-  // use restaurantId directly (e.g. https://www.swiggy.com/restaurants/<slug>-<id>). Until
-  // then, a name search is the safest deep link that always resolves.
-  if (restaurantName) {
-    return `https://www.swiggy.com/search?query=${encodeURIComponent(restaurantName)}`;
-  }
+  if (restaurantId) return `https://www.swiggy.com/menu/${restaurantId}`;
+  if (restaurantName) return `https://www.swiggy.com/search?query=${encodeURIComponent(restaurantName)}`;
   return 'https://www.swiggy.com';
 }
 
@@ -76,15 +76,20 @@ export async function searchRestaurants(transport, { addressId, query, offset = 
 export async function getRestaurantMenu(transport, { addressId, restaurantId, page = 1, pageSize = 8 }) {
   const data = await transport.callTool('get_restaurant_menu', { addressId, restaurantId, page, pageSize });
 
+  // Keep the category title — it's one signal for complement pairing. NOTE: Swiggy titles are often
+  // promotional ("Minimum 50% off", "IPL Packs") rather than courses, so complements.js also infers
+  // the course from the dish name.
   let raw = [];
-  if (Array.isArray(data.items)) raw = data.items;
-  else if (Array.isArray(data.categories)) raw = data.categories.flatMap((c) => c.items || []);
-  else if (Array.isArray(data.menu)) raw = data.menu;
+  if (Array.isArray(data.items)) raw = data.items.map((it) => ({ ...it, __category: null }));
+  else if (Array.isArray(data.categories))
+    raw = data.categories.flatMap((c) => (c.items || []).map((it) => ({ ...it, __category: c.title || null })));
+  else if (Array.isArray(data.menu)) raw = data.menu.map((it) => ({ ...it, __category: null }));
 
   return raw
     .map((it) => ({
       id: String(it.id ?? it.menu_item_id ?? `${restaurantId}-${it.name}`),
       name: it.name ?? '',
+      category: it.__category,
       description: it.description ?? '',
       price: typeof it.price === 'number' ? it.price : Number(it.price) || null,
       isVeg: it.isVeg === true, // explicit boolean in categorized shape; true-or-absent in flat shape
@@ -123,6 +128,54 @@ export async function searchMenu(transport, { addressId, query, veg }) {
     source: 'Swiggy',
     swiggyUrl: swiggyDeepLink({ restaurantId: raw.restaurantId, restaurantName: raw.restaurantName }),
   }));
+}
+
+/**
+ * Add an item to the user's real Swiggy cart.
+ * CONFIRMED (2026-07): cartItems entries use **`menu_item_id`** — `itemId`/`menuItemId`/`id` are
+ * all rejected with INVALID_ITEM_IDS_IN_REQUEST. Success returns statusMessage
+ * "CART_UPDATED_SUCCESSFULLY". Items with variants/addons may need explicit selections.
+ */
+export async function updateFoodCart(transport, { addressId, restaurantId, restaurantName, itemId, quantity = 1 }) {
+  const data = await transport.callTool('update_food_cart', {
+    restaurantId: String(restaurantId),
+    addressId,
+    restaurantName: restaurantName || undefined,
+    cartItems: [{ menu_item_id: String(itemId), quantity }],
+  });
+  const ok = data?.statusMessage === 'CART_UPDATED_SUCCESSFULLY' || data?.successful === true;
+  const d = data?.data || {};
+  return {
+    ok,
+    message: data?.titleMessage || data?.statusMessage || 'Could not add to cart',
+    // Swiggy echoes the address the cart is bound to — surface it so the app can show/verify
+    // that WSIO's selected address matches the cart's delivery address.
+    cart: ok
+      ? {
+          restaurantName: d.restaurant?.name || restaurantName || '',
+          deliveryTo: d.restaurant?.deliverySubtitle || '',
+          itemCount: d.item_count ?? null,
+          toPay: d.pricing?.to_pay ?? null,
+        }
+      : null,
+    raw: data,
+  };
+}
+
+/**
+ * Read the user's cart. NOTE: `addressId` is REQUIRED, and the response does NOT include the
+ * restaurant's name/id — only items + deliverySubtitle. Callers detect "different restaurant" by
+ * checking whether the cart's menu_item_ids exist in the target restaurant's menu.
+ */
+export async function getFoodCart(transport, { addressId }) {
+  const data = await transport.callTool('get_food_cart', { addressId });
+  const d = data?.data || {};
+  return {
+    itemCount: d.item_count ?? 0,
+    items: (d.items || []).map((i) => ({ id: String(i.menu_item_id), name: i.name, quantity: i.quantity })),
+    deliveryTo: d.restaurant?.deliverySubtitle || '',
+    toPay: d.pricing?.to_pay ?? null,
+  };
 }
 
 // ── Order history (get_food_orders → get_food_order_details) ──
@@ -193,6 +246,7 @@ export async function buildHistoryProfile(transport, { addressId, orderCount = 2
         seenRecent.add(norm);
         recentDishes.push({
           name: item.name,
+          restaurantId: restId || null,
           restaurantName: detail.restaurantName || o.restaurantName || '',
           cuisines: (detail.cuisines || []).map((c) => String(c).toLowerCase()),
           orderedAt: detail.orderedAt || o.orderedAt || null,

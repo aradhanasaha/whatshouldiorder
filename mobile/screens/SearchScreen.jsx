@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Picker } from '@react-native-picker/picker';
 import Slider from '@react-native-community/slider';
 import { fetchAddresses } from '../lib/api';
 import { CUISINE_PRESETS, DIET_OPTIONS } from '../lib/ui';
 import { useAuth } from '../lib/authContext';
+import AddressPicker from '../components/AddressPicker';
 
 export default function SearchScreen({ navigation }) {
   const { signOut } = useAuth();
@@ -69,13 +69,7 @@ export default function SearchScreen({ navigation }) {
               <Pressable onPress={loadAddresses}><Text className="mt-2 text-xs font-bold text-amber-300">Retry</Text></Pressable>
             </View>
           ) : addresses.length ? (
-            <View className="overflow-hidden rounded-xl border border-white/10 bg-white/5">
-              <Picker selectedValue={addressId} onValueChange={setAddressId} dropdownIconColor="#9ca3af" style={{ color: '#fff' }}>
-                {addresses.map((a) => (
-                  <Picker.Item key={a.id} label={`${a.label} — ${a.address.slice(0, 40)}`} value={a.id} />
-                ))}
-              </Picker>
-            </View>
+            <AddressPicker addresses={addresses} value={addressId} onChange={setAddressId} />
           ) : (
             <Pressable onPress={loadAddresses}><Text className="text-xs text-gray-600">No addresses yet — tap to retry.</Text></Pressable>
           )}

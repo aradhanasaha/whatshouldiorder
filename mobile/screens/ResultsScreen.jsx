@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, Linking, Pressable, ScrollView, Text, View } from 'react-native';
-import { discover } from '../lib/api';
+import { ActivityIndicator, FlatList, Pressable, ScrollView, Text, View } from 'react-native';
+import { addOrderAgain, discover } from '../lib/api';
 import { sortDishes } from '../lib/ui';
 import DishCard from '../components/DishCard';
+import AddedSheet from '../components/AddedSheet';
+import ConflictDialog from '../components/ConflictDialog';
 
 const SORTS = [
   { key: 'match', label: 'Best match' },
@@ -19,6 +21,22 @@ export default function ResultsScreen({ route }) {
   const [mode, setMode] = useState('');
   const [error, setError] = useState('');
   const [sort, setSort] = useState('match');
+  const [added, setAdded] = useState(null); // result of a successful add → drives AddedSheet
+  const [conflict, setConflict] = useState(null); // { currentItems, retry }
+  const [busyChip, setBusyChip] = useState(null);
+
+  // "Order again" chips: resolve the past dish against the restaurant's live menu, then add.
+  const reorder = async (d, force = false) => {
+    setBusyChip(d.name);
+    const res = await addOrderAgain({ addressId, restaurantId: d.restaurantId, dishName: d.name, veg, force });
+    setBusyChip(null);
+    if (res.conflict) {
+      setConflict({ currentItems: res.currentItems, retry: () => reorder(d, true) });
+      return;
+    }
+    if (res.ok) setAdded({ ...res, restaurantId: d.restaurantId, restaurantName: d.restaurantName });
+    else setError(res.error || `Couldn't re-add ${d.name}`);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -63,10 +81,15 @@ export default function ResultsScreen({ route }) {
             {orderAgain.map((d, i) => (
               <Pressable
                 key={`${d.name}-${i}`}
-                onPress={() => d.swiggyUrl && Linking.openURL(d.swiggyUrl)}
-                className="mr-2 rounded-full border border-orange-200 bg-white px-3 py-1.5 active:opacity-80"
+                onPress={() => reorder(d)}
+                disabled={busyChip === d.name}
+                className="mr-2 flex-row items-center rounded-full border border-orange-200 bg-white px-3 py-1.5 active:opacity-80"
               >
-                <Text className="text-xs font-semibold text-gray-800">{d.name}</Text>
+                {busyChip === d.name ? (
+                  <ActivityIndicator color="#f97316" size="small" />
+                ) : (
+                  <Text className="text-xs font-semibold text-gray-800">+ {d.name}</Text>
+                )}
               </Pressable>
             ))}
           </ScrollView>
@@ -91,7 +114,15 @@ export default function ResultsScreen({ route }) {
       <FlatList
         data={sorted}
         keyExtractor={(d) => d.id}
-        renderItem={({ item }) => <DishCard dish={item} />}
+        renderItem={({ item }) => (
+          <DishCard
+            dish={item}
+            addressId={addressId}
+            veg={veg}
+            onAdded={setAdded}
+            onConflict={setConflict}
+          />
+        )}
         ListHeaderComponent={Header}
         contentContainerStyle={{ padding: 16 }}
         ListEmptyComponent={
@@ -112,6 +143,27 @@ export default function ResultsScreen({ route }) {
             )}
           </View>
         }
+      />
+
+      <AddedSheet
+        visible={Boolean(added)}
+        result={added}
+        addressId={addressId}
+        restaurantId={added?.restaurantId}
+        restaurantName={added?.restaurantName}
+        veg={veg}
+        onClose={() => setAdded(null)}
+      />
+
+      <ConflictDialog
+        visible={Boolean(conflict)}
+        currentItems={conflict?.currentItems}
+        onCancel={() => setConflict(null)}
+        onConfirm={() => {
+          const retry = conflict?.retry;
+          setConflict(null);
+          retry?.();
+        }}
       />
     </View>
   );

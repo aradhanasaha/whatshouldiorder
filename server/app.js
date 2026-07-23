@@ -3,7 +3,7 @@
 // redirect) and on Render (Postgres, https redirect) with the same code.
 import express from 'express';
 import { readFileSync } from 'fs';
-import { handleDiscover, handleGetAddresses } from './discoverApi.js';
+import { handleAddOrderAgain, handleAddToCart, handleDiscover, handleGetAddresses } from './discoverApi.js';
 import { authorizeUrl, exchangeCode, makePkce, refreshTokens } from './oauthClient.js';
 import { createUser, getUser, updateTokens } from './db.js';
 import { mintSession, verifySession } from './session.js';
@@ -35,6 +35,15 @@ const REFRESH_SKEW_MS = 60_000;
 
 const app = express();
 app.use(express.json());
+
+// CORS — needed when the Expo app runs on web (browser) during development.
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 // Short-lived PKCE/state store (single instance is fine for a closed test).
 const pending = new Map(); // state -> { verifier, returnUrl, ts }
@@ -140,6 +149,16 @@ app.post('/api/addresses', requireAuth, async (req, res) => {
 
 app.post('/api/discover', requireAuth, async (req, res) => {
   const r = await handleDiscover(req.body, process.env, req);
+  res.status(r.status).json(r.payload);
+});
+
+app.post('/api/cart/add', requireAuth, async (req, res) => {
+  const r = await handleAddToCart(req.body, process.env, req);
+  res.status(r.status).json(r.payload);
+});
+
+app.post('/api/cart/order-again', requireAuth, async (req, res) => {
+  const r = await handleAddOrderAgain(req.body, process.env, req);
   res.status(r.status).json(r.payload);
 });
 

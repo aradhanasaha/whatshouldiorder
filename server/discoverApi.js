@@ -4,7 +4,8 @@
 
 import { openTransport } from './mcp/transport.js';
 import { getSession } from './mcp/auth.js';
-import { buildHistoryProfile, getAddresses, getRestaurantMenu, searchRestaurants, swiggyDeepLink } from './mcp/swiggyFood.js';
+import { buildHistoryProfile, getAddresses, getFoodCart, getRestaurantMenu, searchRestaurants, swiggyDeepLink, updateFoodCart } from './mcp/swiggyFood.js';
+import { courseFromCategory, pickComplements } from './complements.js';
 import { rankDishes } from './ranking.js';
 import { filterByDishCategory } from './dishKeywords.js';
 
@@ -49,6 +50,146 @@ export async function handleGetAddresses(_body, env = {}, req = null) {
   } finally {
     await transport.close();
   }
+}
+
+// Short-lived menu cache so complement lookups / order-again resolution don't refetch every tap.
+const MENU_TTL_MS = 5 * 60 * 1000;
+const menuCache = new Map(); // `${addressId}:${restaurantId}` -> { menu, ts }
+
+/**
+ * Swiggy lists the same dish under several categories (e.g. "Recommended" AND "Saver Sides"),
+ * so the flattened menu has duplicate ids. Keep one per id, preferring the copy whose category
+ * actually names a course (better complement pairing than "Recommended").
+ */
+function dedupeMenu(menu) {
+  const byId = new Map();
+  for (const d of menu) {
+    const prev = byId.get(d.id);
+    if (!prev) {
+      byId.set(d.id, d);
+    } else if (courseFromCategory(prev.category) === 'unknown' && courseFromCategory(d.category) !== 'unknown') {
+      byId.set(d.id, d);
+    }
+  }
+  return [...byId.values()];
+}
+
+async function menuFor(transport, addressId, restaurantId) {
+  const key = `${addressId}:${restaurantId}`;
+  const hit = menuCache.get(key);
+  if (hit && Date.now() - hit.ts < MENU_TTL_MS) return hit.menu;
+  const menu = dedupeMenu(await getRestaurantMenu(transport, { addressId, restaurantId }));
+  menuCache.set(key, { menu, ts: Date.now() });
+  return menu;
+}
+
+/**
+ * Add one dish to the user's real Swiggy cart.
+ * IMPORTANT: Swiggy silently REPLACES the cart when you add from a different restaurant, so we
+ * pre-check and return 409 unless `force` is set — otherwise users lose their cart with no warning.
+ * The cart response has no restaurant id/name, so we detect "different restaurant" by testing
+ * whether the cart's item ids exist in this restaurant's menu.
+ */
+export async function handleAddToCart(body = {}, env = {}, req = null) {
+  const { addressId, restaurantId, restaurantName, itemId, quantity = 1, force = false, veg = 'all' } = body;
+  if (!addressId || !restaurantId || !itemId) {
+    return { status: 400, payload: { error: 'addressId, restaurantId and itemId are required' } };
+  }
+
+  const session = getSession(env, req);
+  if (!session) return { status: 401, payload: { error: 'not_authenticated' } };
+
+  const transport = await openTransport(env, session);
+  try {
+    const menu = await menuFor(transport, addressId, restaurantId);
+
+    if (!force) {
+      const cart = await getFoodCart(transport, { addressId }).catch(() => null);
+      if (cart?.itemCount > 0) {
+        const here = new Set(menu.map((d) => String(d.id)));
+        const fromOther = cart.items.filter((i) => !here.has(String(i.id)));
+        if (fromOther.length === cart.items.length) {
+          return {
+            status: 409,
+            payload: {
+              ok: false,
+              conflict: true,
+              currentItems: cart.items.map((i) => i.name),
+              message: "You're selecting from a different place, it will reset your cart",
+            },
+          };
+        }
+      }
+    }
+
+    const r = await updateFoodCart(transport, { addressId, restaurantId, restaurantName, itemId, quantity });
+    if (!r.ok) return { status: 502, payload: { ok: false, message: r.message } };
+
+    const added = menu.find((d) => String(d.id) === String(itemId)) || { id: itemId };
+    // Don't suggest anything already sitting in the cart.
+    const inCartIds = (r.raw?.data?.items || []).map((i) => String(i.menu_item_id));
+    const complements = pickComplements(menu, added, { veg, excludeIds: inCartIds });
+
+    return {
+      status: 200,
+      payload: { ok: true, message: r.message, cart: r.cart, complements, cartUrl: 'https://www.swiggy.com/cart' },
+    };
+  } catch (error) {
+    return { status: 502, payload: { ok: false, error: error.message || 'add to cart failed' } };
+  } finally {
+    await transport.close();
+  }
+}
+
+/** Match a remembered dish name to a live menu item (history has no usable menu_item_id). */
+function findByName(menu, dishName) {
+  const n = String(dishName || '').toLowerCase().trim();
+  if (!n) return null;
+  const exact = menu.find((d) => d.name.toLowerCase().trim() === n);
+  if (exact) return exact;
+  const contains = menu.find((d) => d.name.toLowerCase().includes(n) || n.includes(d.name.toLowerCase()));
+  if (contains) return contains;
+  // Best token overlap.
+  const tokens = new Set(n.split(/\W+/).filter((t) => t.length > 2));
+  let best = null;
+  let bestScore = 0;
+  for (const d of menu) {
+    const dt = new Set(d.name.toLowerCase().split(/\W+/).filter((t) => t.length > 2));
+    const overlap = [...tokens].filter((t) => dt.has(t)).length;
+    if (overlap > bestScore) {
+      bestScore = overlap;
+      best = d;
+    }
+  }
+  return bestScore >= 2 ? best : null;
+}
+
+/** "Order again": resolve a past dish name against the restaurant's live menu, then add it. */
+export async function handleAddOrderAgain(body = {}, env = {}, req = null) {
+  const { addressId, restaurantId, dishName, force = false, veg = 'all' } = body;
+  if (!addressId || !restaurantId || !dishName) {
+    return { status: 400, payload: { error: 'addressId, restaurantId and dishName are required' } };
+  }
+
+  const session = getSession(env, req);
+  if (!session) return { status: 401, payload: { error: 'not_authenticated' } };
+
+  const transport = await openTransport(env, session);
+  let match;
+  try {
+    const menu = await menuFor(transport, addressId, restaurantId);
+    match = findByName(menu, dishName);
+    if (!match) {
+      return { status: 404, payload: { ok: false, message: `"${dishName}" isn't on the menu right now` } };
+    }
+  } catch (error) {
+    return { status: 502, payload: { ok: false, error: error.message || 'menu lookup failed' } };
+  } finally {
+    await transport.close();
+  }
+
+  // Reuse the normal path (conflict check, complements, cart summary).
+  return handleAddToCart({ addressId, restaurantId, itemId: match.id, force, veg }, env, req);
 }
 
 export async function handleDiscover(body = {}, env = {}, req = null) {
@@ -146,7 +287,7 @@ export async function handleDiscover(body = {}, env = {}, req = null) {
       .map((d) => ({
         name: d.name,
         restaurantName: d.restaurantName,
-        swiggyUrl: swiggyDeepLink({ restaurantName: d.restaurantName }),
+        swiggyUrl: swiggyDeepLink({ restaurantId: d.restaurantId, restaurantName: d.restaurantName }),
       }));
 
     return { status: 200, payload: { dishes: ranked, orderAgain, mode: session.mode, vegApplied: true } };

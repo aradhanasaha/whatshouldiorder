@@ -51,6 +51,35 @@ export async function fetchAddresses() {
   return { ok, status, addresses: data.addresses || [], error: data.error || null, mode: data.mode };
 }
 
+function cartResult(ok, status, data) {
+  return {
+    ok: ok && data.ok !== false,
+    status,
+    conflict: data.conflict === true, // adding from a different restaurant would reset the cart
+    currentItems: data.currentItems || [],
+    cart: data.cart || null, // { restaurantName, deliveryTo, itemCount, toPay }
+    complements: data.complements || [],
+    cartUrl: data.cartUrl || 'https://www.swiggy.com/cart',
+    error: data.error || data.message || null,
+  };
+}
+
+/** Add a dish to the user's real Swiggy cart. `force` accepts resetting a different restaurant's cart. */
+export async function addToCart({ addressId, restaurantId, restaurantName, itemId, quantity = 1, force = false, veg = 'all' }) {
+  const { ok, status, data } = await postJson('/api/cart/add', {
+    addressId, restaurantId, restaurantName, itemId, quantity, force, veg,
+  });
+  return cartResult(ok, status, data);
+}
+
+/** Re-order a past dish by name (resolved against the restaurant's live menu server-side). */
+export async function addOrderAgain({ addressId, restaurantId, dishName, force = false, veg = 'all' }) {
+  const { ok, status, data } = await postJson('/api/cart/order-again', {
+    addressId, restaurantId, dishName, force, veg,
+  });
+  return cartResult(ok, status, data);
+}
+
 export async function discover({ addressId, cuisine, budget, veg }) {
   const { ok, status, data } = await postJson('/api/discover', { addressId, cuisine, budget, veg });
   return {

@@ -11,7 +11,7 @@
 import { createServer } from 'http';
 import { readFileSync } from 'fs';
 import { jsonResponse, parseRequestBody } from './openaiApi.js';
-import { handleDiscover, handleGetAddresses } from './discoverApi.js';
+import { handleAddOrderAgain, handleAddToCart, handleDiscover, handleGetAddresses } from './discoverApi.js';
 
 // Minimal .env loader (no dependency) — populates process.env without overriding existing vars.
 function loadEnvFile(path) {
@@ -38,6 +38,8 @@ const PORT = Number(process.env.PORT) || 8787;
 const ROUTES = {
   '/api/addresses': handleGetAddresses,
   '/api/discover': handleDiscover,
+  '/api/cart/add': handleAddToCart,
+  '/api/cart/order-again': handleAddOrderAgain,
 };
 
 const server = createServer(async (req, res) => {
