@@ -72,10 +72,10 @@ export async function addToCart({ addressId, restaurantId, restaurantName, itemI
   return cartResult(ok, status, data);
 }
 
-/** Re-order a past dish by name (resolved against the restaurant's live menu server-side). */
-export async function addOrderAgain({ addressId, restaurantId, dishName, force = false, veg = 'all' }) {
+/** Re-order a past dish — by exact itemId when known, else by name (resolved server-side). */
+export async function addOrderAgain({ addressId, restaurantId, itemId, dishName, force = false, veg = 'all' }) {
   const { ok, status, data } = await postJson('/api/cart/order-again', {
-    addressId, restaurantId, dishName, force, veg,
+    addressId, restaurantId, itemId, dishName, force, veg,
   });
   return cartResult(ok, status, data);
 }

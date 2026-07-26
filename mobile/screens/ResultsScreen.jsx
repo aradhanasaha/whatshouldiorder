@@ -28,7 +28,7 @@ export default function ResultsScreen({ route }) {
   // "Order again" chips: resolve the past dish against the restaurant's live menu, then add.
   const reorder = async (d, force = false) => {
     setBusyChip(d.name);
-    const res = await addOrderAgain({ addressId, restaurantId: d.restaurantId, dishName: d.name, veg, force });
+    const res = await addOrderAgain({ addressId, restaurantId: d.restaurantId, itemId: d.itemId, dishName: d.name, veg, force });
     setBusyChip(null);
     if (res.conflict) {
       setConflict({ currentItems: res.currentItems, retry: () => reorder(d, true) });

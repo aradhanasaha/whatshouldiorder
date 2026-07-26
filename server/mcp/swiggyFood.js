@@ -136,12 +136,18 @@ export async function searchMenu(transport, { addressId, query, veg }) {
  * all rejected with INVALID_ITEM_IDS_IN_REQUEST. Success returns statusMessage
  * "CART_UPDATED_SUCCESSFULLY". Items with variants/addons may need explicit selections.
  */
-export async function updateFoodCart(transport, { addressId, restaurantId, restaurantName, itemId, quantity = 1 }) {
+export async function updateFoodCart(transport, { addressId, restaurantId, restaurantName, itemId, quantity = 1, cartItems }) {
+  // update_food_cart REPLACES the cart with exactly the cartItems sent — it is NOT additive. So to
+  // add a dish while keeping what's already there, the caller must pass the full merged `cartItems`
+  // list. The single-item `itemId` form is a convenience for a fresh/first add.
+  const items = cartItems?.length
+    ? cartItems.map((c) => ({ menu_item_id: String(c.menu_item_id ?? c.id ?? c.itemId), quantity: c.quantity ?? 1 }))
+    : [{ menu_item_id: String(itemId), quantity }];
   const data = await transport.callTool('update_food_cart', {
     restaurantId: String(restaurantId),
     addressId,
     restaurantName: restaurantName || undefined,
-    cartItems: [{ menu_item_id: String(itemId), quantity }],
+    cartItems: items,
   });
   const ok = data?.statusMessage === 'CART_UPDATED_SUCCESSFULLY' || data?.successful === true;
   const d = data?.data || {};
@@ -182,6 +188,27 @@ export async function getFoodCart(transport, { addressId }) {
 // Item/order field names are UNCONFIRMED — reconcile against a live capture. Kept tolerant:
 // normalizers read several plausible keys and fall back gracefully.
 
+// Delivery address text of a past order. CONFIRMED (2026-07): get_food_orders (the list) carries NO
+// delivery address at all, and get_food_order_details.deliveryAddress is TEXT ONLY (no addressId) —
+// { name, line1, address, area, city, flatNo, landmark }. So "order again" scoping matches this text
+// (pincode-first) against the selected saved address rather than by id. Returns '' when absent.
+function orderAddressText(order = {}) {
+  const da = order.deliveryAddress || order.address || null;
+  if (!da) return '';
+  if (typeof da === 'string') return da;
+  return [da.flatNo, da.line1 || da.address, da.area, da.city, da.landmark].filter(Boolean).join(', ');
+}
+
+// The REORDER action carries the exact menu_item_id per past dish — far more reliable for "order
+// again" than resolving a name against the live menu. Shape: actions[{type:"..._REORDER",
+// reorderMeta:{orderItems:[{itemId, name, isVeg, quantity}]}}].
+function reorderItemsOf(o = {}) {
+  const action = (o.actions || []).find((a) => /reorder/i.test(a.type || '') || a.reorderMeta);
+  return (action?.reorderMeta?.orderItems || [])
+    .map((i) => ({ name: i.name || '', itemId: i.itemId != null ? String(i.itemId) : null }))
+    .filter((i) => i.name && i.itemId);
+}
+
 export async function getFoodOrders(transport, { addressId, orderCount = 20 }) {
   const data = await transport.callTool('get_food_orders', { addressId, orderCount });
   const list = data.orders || data.foodOrders || [];
@@ -189,6 +216,7 @@ export async function getFoodOrders(transport, { addressId, orderCount = 20 }) {
     orderId: String(o.orderId ?? o.id ?? ''),
     restaurantId: o.restaurantId != null ? String(o.restaurantId) : null,
     restaurantName: o.restaurantName ?? o.restaurant?.name ?? '',
+    reorderItems: reorderItemsOf(o),
     orderedAt: o.orderedAt ?? o.orderTime ?? o.createdAt ?? null,
   })).filter((o) => o.orderId);
 }
@@ -199,9 +227,12 @@ export async function getFoodOrderDetails(transport, { orderId }) {
   const items = order.items || order.orderItems || [];
   return {
     orderId: String(order.orderId ?? order.id ?? orderId),
-    restaurantId: order.restaurantId != null ? String(order.restaurantId) : null,
+    // Detail nests the restaurant under `restaurant.id`; the list uses top-level restaurantId.
+    restaurantId: order.restaurantId != null ? String(order.restaurantId)
+      : order.restaurant?.id != null ? String(order.restaurant.id) : null,
     restaurantName: order.restaurantName ?? order.restaurant?.name ?? '',
     cuisines: order.cuisines ?? order.restaurant?.cuisines ?? [],
+    addressText: orderAddressText(order),
     orderedAt: order.orderedAt ?? order.orderTime ?? order.createdAt ?? null,
     items: items.map((it) => ({
       name: it.name ?? it.dishName ?? it.itemName ?? '',
@@ -244,11 +275,16 @@ export async function buildHistoryProfile(transport, { addressId, orderCount = 2
       bump(orderedDishCounts, norm);
       if (!seenRecent.has(norm)) {
         seenRecent.add(norm);
+        // Exact menu_item_id from the order's REORDER action (detail.items have no id) — matched by
+        // name since both come from Swiggy. Lets "order again" add by id instead of re-resolving.
+        const reorderId = (o.reorderItems || []).find((r) => r.name.toLowerCase().trim() === item.name.toLowerCase().trim())?.itemId || null;
         recentDishes.push({
           name: item.name,
+          itemId: reorderId,
           restaurantId: restId || null,
           restaurantName: detail.restaurantName || o.restaurantName || '',
           cuisines: (detail.cuisines || []).map((c) => String(c).toLowerCase()),
+          addressText: detail.addressText || '',
           orderedAt: detail.orderedAt || o.orderedAt || null,
         });
       }

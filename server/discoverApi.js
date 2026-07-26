@@ -19,6 +19,24 @@ const CUISINE_QUERIES = {
 };
 const queriesFor = (c) => CUISINE_QUERIES[c.toLowerCase().trim()] || [c];
 
+// "Order again" address scoping. Past orders expose only delivery-address TEXT (no id), so compare
+// the order's address to the selected saved address. Pincode is the strongest signal; else fall back
+// to token overlap. Returns true (same), false (different), or null (can't tell → don't filter out).
+const pincodeOf = (s) => (String(s || '').match(/\b(\d{6})\b/) || [])[1] || null;
+const addrTokens = (s) =>
+  new Set(String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter((t) => t.length > 3));
+function sameDeliveryAddress(orderText, selectedText) {
+  if (!orderText || !selectedText) return null;
+  const pa = pincodeOf(orderText);
+  const pb = pincodeOf(selectedText);
+  if (pa && pb) return pa === pb;
+  const a = addrTokens(orderText);
+  const b = addrTokens(selectedText);
+  if (!a.size || !b.size) return null;
+  const overlap = [...a].filter((t) => b.has(t)).length;
+  return overlap >= 2;
+}
+
 // Per-address history cache — history is N+1 MCP calls, so fetch once and reuse across searches.
 const HISTORY_TTL_MS = 10 * 60 * 1000;
 const historyCache = new Map(); // key: `${mode}:${addressId}` -> { profile, ts }
@@ -102,27 +120,39 @@ export async function handleAddToCart(body = {}, env = {}, req = null) {
   const transport = await openTransport(env, session);
   try {
     const menu = await menuFor(transport, addressId, restaurantId);
+    const here = new Set(menu.map((d) => String(d.id)));
 
-    if (!force) {
-      const cart = await getFoodCart(transport, { addressId }).catch(() => null);
-      if (cart?.itemCount > 0) {
-        const here = new Set(menu.map((d) => String(d.id)));
-        const fromOther = cart.items.filter((i) => !here.has(String(i.id)));
-        if (fromOther.length === cart.items.length) {
-          return {
-            status: 409,
-            payload: {
-              ok: false,
-              conflict: true,
-              currentItems: cart.items.map((i) => i.name),
-              message: "You're selecting from a different place, it will reset your cart",
-            },
-          };
-        }
-      }
+    // update_food_cart REPLACES the cart, so we must resend the existing items alongside the new one
+    // or the previously added dish silently disappears. Read the current cart and decide whether this
+    // is the SAME restaurant (keep + merge) or a DIFFERENT one (fresh cart / conflict).
+    const cart = await getFoodCart(transport, { addressId }).catch(() => null);
+    const existing = cart?.items || [];
+    const fromOther = existing.filter((i) => !here.has(String(i.id)));
+    const differentRestaurant = existing.length > 0 && fromOther.length === existing.length;
+
+    if (!force && differentRestaurant) {
+      return {
+        status: 409,
+        payload: {
+          ok: false,
+          conflict: true,
+          currentItems: existing.map((i) => i.name),
+          message: "You're selecting from a different place, it will reset your cart",
+        },
+      };
     }
 
-    const r = await updateFoodCart(transport, { addressId, restaurantId, restaurantName, itemId, quantity });
+    // Merge: keep everything already in the cart (unless we're intentionally switching restaurants),
+    // then add/increment the new item. The cart is single-restaurant, so when it isn't a different
+    // restaurant every existing item belongs here and must be preserved.
+    const merged = new Map();
+    if (!differentRestaurant) {
+      for (const i of existing) merged.set(String(i.id), { menu_item_id: String(i.id), quantity: i.quantity || 1 });
+    }
+    const prev = merged.get(String(itemId));
+    merged.set(String(itemId), { menu_item_id: String(itemId), quantity: (prev?.quantity || 0) + quantity });
+
+    const r = await updateFoodCart(transport, { addressId, restaurantId, restaurantName, cartItems: [...merged.values()] });
     if (!r.ok) return { status: 502, payload: { ok: false, message: r.message } };
 
     const added = menu.find((d) => String(d.id) === String(itemId)) || { id: itemId };
@@ -164,11 +194,22 @@ function findByName(menu, dishName) {
   return bestScore >= 2 ? best : null;
 }
 
-/** "Order again": resolve a past dish name against the restaurant's live menu, then add it. */
+/**
+ * "Order again": add a past dish back to the cart. Prefer the exact menu_item_id from the order's
+ * REORDER action (itemId); only resolve the name against the live menu when we don't have one (or
+ * the id turns out to be stale/unavailable).
+ */
 export async function handleAddOrderAgain(body = {}, env = {}, req = null) {
-  const { addressId, restaurantId, dishName, force = false, veg = 'all' } = body;
-  if (!addressId || !restaurantId || !dishName) {
-    return { status: 400, payload: { error: 'addressId, restaurantId and dishName are required' } };
+  const { addressId, restaurantId, itemId, dishName, force = false, veg = 'all' } = body;
+  if (!addressId || !restaurantId || (!itemId && !dishName)) {
+    return { status: 400, payload: { error: 'addressId, restaurantId and (itemId or dishName) are required' } };
+  }
+
+  // Fast path: we already know the exact id. Return on success or a conflict (needs confirmation);
+  // only fall back to name resolution on a hard failure when we still have a name to work with.
+  if (itemId) {
+    const direct = await handleAddToCart({ addressId, restaurantId, itemId, force, veg }, env, req);
+    if (direct.status === 200 || direct.status === 409 || !dishName) return direct;
   }
 
   const session = getSession(env, req);
@@ -281,11 +322,20 @@ export async function handleDiscover(body = {}, env = {}, req = null) {
       const n = d.name.toLowerCase();
       return n.includes(ql) || termsLc.some((t) => n.includes(t));
     };
-    const orderAgain = (profile?.recentDishes || [])
+    // Scope to the SELECTED address. Past orders carry only delivery-address TEXT (no id), so match
+    // that text against the selected saved address. Drop confirmed other-address orders; keep same-
+    // address and any we can't classify, so the ribbon never wrongly empties.
+    const addrList = await getAddresses(transport).catch(() => []);
+    const selectedAddrText = addrList.find((a) => String(a.id) === String(addressId))?.address || '';
+    const recent = profile?.recentDishes || [];
+    const orderAgain = recent
+      .filter((d) => sameDeliveryAddress(d.addressText, selectedAddrText) !== false)
       .filter(relevant)
       .slice(0, 6)
       .map((d) => ({
         name: d.name,
+        itemId: d.itemId, // exact menu_item_id from the order's REORDER action (may be null → resolve by name)
+        restaurantId: d.restaurantId, // REQUIRED by the reorder/add-to-cart call — was missing, so taps no-op'd
         restaurantName: d.restaurantName,
         swiggyUrl: swiggyDeepLink({ restaurantId: d.restaurantId, restaurantName: d.restaurantName }),
       }));
